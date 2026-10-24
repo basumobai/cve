@@ -44,7 +44,7 @@ def run(argv, timeout=25, cwd=None, output_limit=150000):
         stderr = proc.stderr
         # PHP deprecation floods can hide the actual fatal message at the end.
         if len(stderr) > 1500:
-            stderr = stderr[:300] + "\\n...[stderr truncated]...\\n" + stderr[-1200:]
+            stderr = stderr[:300] + "\n...[stderr truncated]...\n" + stderr[-1200:]
         return {"ok": proc.returncode == 0, "returncode": proc.returncode,
                 "stdout": proc.stdout[:output_limit], "error": stderr,
                 "truncated": len(proc.stdout) > output_limit}
@@ -303,12 +303,11 @@ def audit_dependencies(app, timeout):
         errors.append(f"{name}: npm CLI not installed")
     if (path / "composer.lock").is_file() and shutil.which("composer"):
         version = run(["composer", "--version", "--no-interaction"], timeout=15)
-        version_text = version["stdout"] + "\\n" + version["error"]
-        match = re.search(r"Composer(?:\\s+version)?\\s+(\\d+)\\.(\\d+)",
+        version_text = version["stdout"] + "\n" + version["error"]
+        match = re.search(r"Composer(?:\s+version)?\s+(\d+)\.(\d+)",
                           version_text, re.IGNORECASE)
         if match and (int(match.group(1)), int(match.group(2))) < (2, 4):
-            errors.append(f"{name}: composer audit incomplete: Composer \\
-{match.group(1)}.{match.group(2)} does not support audit; upgrade Composer CLI to >=2.4 only")
+            errors.append(f"{name}: composer audit incomplete: Composer {match.group(1)}.{match.group(2)} does not support audit; upgrade Composer CLI to >=2.4 only")
         else:
             result = run(["composer", "--no-plugins", "audit", "--locked", "--format=json", "--no-interaction"],
                          cwd=str(path), timeout=timeout, output_limit=2000000)
