@@ -138,6 +138,57 @@ class GuardTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 guard.load_config(p)
 
+    def test_deduplicates_same_package_vulnerability(self):
+        record = {"id": "CVE-2025-1234", "severity": "HIGH",
+                  "package": "lib", "installed": "1", "target": "site"}
+        result = guard.distinct_vulnerabilities([record, dict(record)])
+        self.assertEqual(len(result), 1)
+        self.assertEqual(guard.counts_by_severity(
+            {"vulnerabilities": result})["HIGH"], 1)
+
+    def test_retention_only_removes_generated_reports(self):
+        with tempfile.TemporaryDirectory() as d:
+            outdir = Path(d) / "reports"
+            outdir.mkdir()
+            (outdir / "notes.md").write_text("do-not-delete")
+            report = {"timestamp_utc": "2026-10-24T00:00:00+00:00",
+                      "host": {"distribution": "Ubuntu", "kernel": "generic"},
+                      "scan_coverage": [], "scan_errors": [],
+                      "vulnerabilities": [], "findings": []}
+            for idx in range(6):
+                stamp = f"20260101T01010{idx}000000Z"
+                (outdir / f"scan-{stamp}.json").write_text("{}")
+                (outdir / f"scan-{stamp}.md").write_text("old")
+            guard.save_reports(report, outdir, keep=3)
+            self.assertEqual(len(list(outdir.glob("scan-*.json"))), 3)
+            self.assertEqual(len(list(outdir.glob("scan-*.md"))), 3)
+            self.assertTrue((outdir / "notes.md").exists())
+
+    def test_npm_error_never_implies_clean_scan(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d)
+            (path / "package-lock.json").write_text("{}", encoding="utf-8")
+            def fake_run(args, **kwargs):
+                return {"stdout": '{"error":{"code":"E403"}}',
+                        "error": "access denied", "returncode": 1,
+                        "ok": False, "truncated": False}
+            with mock.patch.object(guard.shutil, "which", side_effect=lambda n: "/bin/npm" if n == "npm" else None), \
+                 mock.patch.object(guard, "run", side_effect=fake_run):
+                findings, vulns, errors = guard.audit_dependencies(
+                    {"path": d, "name": "sample"}, 20)
+            self.assertEqual(vulns, [])
+            self.assertTrue(any("incomplete" in e for e in errors))
+
+    def test_cve_cli_help_does_not_need_root_or_daemon(self):
+        import subprocess
+        script = source.parents[1] / "scripts" / "cve"
+        response = subprocess.run(["bash", str(script), "help"],
+                                  capture_output=True, text=True, check=True)
+        self.assertIn("sudo cve scan", response.stdout)
+        response = subprocess.run(["bash", str(script)],
+                                  capture_output=True, text=True, check=True)
+        self.assertIn("sudo cve update", response.stdout)
+
     def test_command_no_shell(self):
         result = guard.run(["/bin/echo", "hello"])
         self.assertTrue(result["ok"])
