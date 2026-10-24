@@ -16,6 +16,8 @@ import subprocess
 import sys
 import tempfile
 
+from site_discovery import discover_websites
+
 SENSITIVE_PORTS = {
     2375: "Docker API (unencrypted)",
     2376: "Docker API",
@@ -51,7 +53,10 @@ def finding(kind, severity, title, evidence, remediation):
 
 def load_config(path):
     default = {"applications": [], "scan_docker_images": True,
-               "scan_host_rootfs": True, "timeout_seconds": 360}
+               "scan_host_rootfs": True, "timeout_seconds": 360,
+               "auto_discover_websites": True, "web_roots": ["/www/wwwroot"],
+               "max_websites": 100, "web_project_depth": 3,
+               "max_web_projects": 250, "scan_web_files": True}
     if path:
         with open(path, "r", encoding="utf-8") as f:
             value = json.load(f)
@@ -63,6 +68,19 @@ def load_config(path):
     for app in default["applications"]:
         if not isinstance(app, dict) or not isinstance(app.get("path"), str):
             raise ValueError("each application needs a path")
+    if not isinstance(default["auto_discover_websites"], bool):
+        raise ValueError("auto_discover_websites must be boolean")
+    if not isinstance(default["scan_web_files"], bool):
+        raise ValueError("scan_web_files must be boolean")
+    if (not isinstance(default["web_roots"], list) or
+            any(not isinstance(path, str) or not path.startswith("/")
+                for path in default["web_roots"])):
+        raise ValueError("web_roots must contain absolute paths")
+    for key, limit in (("max_websites", 500), ("web_project_depth", 6),
+                       ("max_web_projects", 1000)):
+        value = default[key]
+        if type(value) is not int or value < 0 or value > limit:
+            raise ValueError(f"{key} must be an integer between 0 and {limit}")
     return default
 
 
@@ -210,7 +228,7 @@ def parse_trivy(payload, target):
     return issues
 
 
-def trivy_scan(mode, target, timeout):
+def trivy_scan(mode, target, timeout, skip_dirs=None):
     if not shutil.which("trivy"):
         return None, "Trivy not installed"
     # Local temporary file avoids huge stdout and will be deleted on exit.
@@ -222,6 +240,8 @@ def trivy_scan(mode, target, timeout):
             for directory in ("/proc", "/sys", "/dev", "/run", "/var/lib/docker",
                               "/var/lib/containerd", "/var/lib/cve-guard"):
                 cmd.extend(["--skip-dirs", directory])
+        for directory in (skip_dirs or []):
+            cmd.extend(["--skip-dirs", str(directory)])
         result = run(cmd, timeout=timeout + 25)
         if not result["ok"]:
             return None, ("Trivy exit " + str(result["returncode"]) +
@@ -279,6 +299,7 @@ def make_report(config):
     now = dt.datetime.now(dt.timezone.utc).isoformat()
     report = {"timestamp_utc": now, "host": get_os(), "versions": inventory(),
               "listeners": [], "containers": [], "vulnerabilities": [],
+              "websites": [], "site_discovery_warnings": [],
               "findings": [], "scan_errors": [], "scan_coverage": []}
     # Vendor backports may exist; report unsupported upstream runtimes for manual verification.
     for label, value in report["versions"].items():
@@ -316,20 +337,63 @@ def make_report(config):
                 report["scan_coverage"].append("image: " + image)
                 report["vulnerabilities"].extend(vulns)
     if config.get("scan_host_rootfs", False):
-        vulns, err = trivy_scan("rootfs", "/", timeout)
+        # Website dependency scans are separate to avoid repeated expensive traversal.
+        skip = config.get("web_roots", []) if config.get("auto_discover_websites", True) else []
+        vulns, err = trivy_scan("rootfs", "/", timeout, skip_dirs=skip)
         if err:
             report["scan_errors"].append("Host rootfs: " + err)
         else:
             report["scan_coverage"].append("host rootfs")
             report["vulnerabilities"].extend(vulns)
-    for app in config["applications"]:
+    apps = list(config["applications"])
+    scanned_site_paths = set()
+    if config.get("auto_discover_websites", True):
+        sites, warnings = discover_websites(
+            config.get("web_roots", ["/www/wwwroot"]),
+            max_sites=config.get("max_websites", 100),
+            max_depth=config.get("web_project_depth", 3),
+            max_projects=config.get("max_web_projects", 250))
+        report["websites"] = sites
+        report["site_discovery_warnings"] = warnings
+        # Skipped sites and inaccessible paths are incomplete coverage, not "secure".
+        report["scan_errors"].extend("Website discovery: " + w for w in warnings)
+        for site in sites:
+            path = site["path"]
+            if config.get("scan_web_files", True):
+                skipped = [str(Path(path) / name) for name in
+                           ("logs", "log", "backup", "backups", "uploads", "upload",
+                            "tmp", "temp", "cache", ".git", "node_modules",
+                            ".next", "vendor", "storage")]
+                vulns, err = trivy_scan("fs", path, timeout, skip_dirs=skipped)
+                if err:
+                    report["scan_errors"].append(f"Website {site['name']} ({path}): {err}")
+                else:
+                    report["scan_coverage"].append("website fs: " + path)
+                    report["vulnerabilities"].extend(vulns)
+                    scanned_site_paths.add(str(Path(path).resolve()))
+            else:
+                report["scan_coverage"].append("website discovered (fs scan disabled): " + path)
+            for project in site["projects"]:
+                apps.append({"name": f"{site['name']} / {Path(project['path']).name}",
+                             "path": project["path"], "trivy": False})
+        if not sites and not warnings:
+            report["scan_coverage"].append("No website directories found in configured web roots")
+    seen_apps = set()
+    for app in apps:
         path = app["path"]
-        vulns, err = trivy_scan("fs", path, timeout)
-        if err:
-            report["scan_errors"].append(f"Application {app.get('name', path)}: {err}")
-        else:
-            report["scan_coverage"].append("application: " + str(path))
-            report["vulnerabilities"].extend(vulns)
+        canonical = str(Path(path).expanduser().resolve())
+        if canonical in seen_apps:
+            continue
+        seen_apps.add(canonical)
+        # A discovered web project is already covered by its parent site Trivy fs scan.
+        # Only manual application entries need standalone Trivy scans.
+        if app.get("trivy", True) and canonical not in scanned_site_paths:
+            vulns, err = trivy_scan("fs", path, timeout)
+            if err:
+                report["scan_errors"].append(f"Application {app.get('name', path)}: {err}")
+            else:
+                report["scan_coverage"].append("application: " + str(path))
+                report["vulnerabilities"].extend(vulns)
         findings, vulns, errors = audit_dependencies(app, timeout)
         report["findings"].extend(findings)
         report["vulnerabilities"].extend(vulns)
@@ -366,6 +430,12 @@ def markdown_report(report):
         "", "## 扫描覆盖", "",
     ]
     lines += ["- " + v for v in report["scan_coverage"]] or ["- 尚未成功进行任何扫描"]
+    lines += ["", "## 自动发现的网站", ""]
+    for site in report.get("websites", []):
+        technologies = ", ".join(site.get("technologies", [])) or "Unknown/static"
+        lines.append(f"- {site['name']} | {site['path']} | 技术: {technologies} | 发现项目: {len(site['projects'])}")
+    if not report.get("websites"):
+        lines.append("- 未发现网站；如部署在自定义路径，需添加至 web_roots")
     lines += ["", "## 未完成或错误", ""]
     lines += ["- " + str(v).replace("\n", " ") for v in report["scan_errors"]] or ["- 无"]
     lines += ["", "## 配置风险", ""]
