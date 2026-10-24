@@ -422,13 +422,20 @@ def make_report(config):
             else:
                 report["scan_coverage"].append("website discovered (fs scan disabled): " + path)
             for project in site["projects"]:
+                # A failed site scan must not silently mark nested dependencies covered.
+                # When site filesystem scanning is disabled, scan each discovered
+                # project individually rather than claiming it was scanned.
+                covered = str(Path(path).resolve()) in scanned_site_paths
                 apps.append({"name": f"{site['name']} / {Path(project['path']).name}",
-                             "path": project["path"], "trivy": False})
+                             "path": project["path"], "trivy": not covered})
         if not sites and not warnings:
             report["scan_coverage"].append("No website directories found in configured web roots")
     seen_apps = set()
     for app in apps:
         path = app["path"]
+        if not Path(path).is_dir():
+            report["scan_errors"].append(f"Application path missing/unreadable: {path}")
+            continue
         canonical = str(Path(path).expanduser().resolve())
         if canonical in seen_apps:
             continue
