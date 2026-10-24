@@ -17,6 +17,7 @@ import sys
 import tempfile
 
 from site_discovery import discover_websites
+from remediation import build_plan, render, write_private
 
 SENSITIVE_PORTS = {
     2375: "Docker API (unencrypted)",
@@ -545,6 +546,17 @@ def main():
         config = load_config(args.config)
         report = make_report(config)
         paths = save_reports(report, args.output_dir)
+        # Generate a plan even if some checks were incomplete; never execute repairs.
+        source = Path(paths[0])
+        plan = build_plan(report, source)
+        plan_path = Path("/var/lib/cve-guard/plans") / source.name.replace("scan-", "plan-", 1)
+        write_private(plan_path, json.dumps(plan, ensure_ascii=False, indent=2) + "\n")
+        write_private(plan_path.with_suffix(".md"), render(plan))
+        plans = sorted(p for p in plan_path.parent.glob("plan-*.json")
+                       if p.is_file() and not p.is_symlink())
+        for old in plans[:-30]:
+            old.unlink()
+            old.with_suffix(".md").unlink(missing_ok=True)
     except (OSError, ValueError) as exc:
         print(f"CVE Guard failed: {exc}", file=sys.stderr)
         return 2
