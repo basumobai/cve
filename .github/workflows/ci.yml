@@ -1,0 +1,23 @@
+name: CI (does not scan private VPS)
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '15 2 * * 1'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Python compile check
+        run: python -m py_compile src/cve_guard.py
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Bash syntax check
+        run: bash -n scripts/*.sh
