@@ -1,56 +1,48 @@
 #!/usr/bin/env bash
+# Idempotent installer and upgrade path for Ubuntu 24.04.
 set -Eeuo pipefail
-if [[ $EUID -ne 0 ]]; then echo "Run as root (sudo)." >&2; exit 1; fi
-if ! command -v systemctl >/dev/null || ! command -v python3 >/dev/null; then
-  echo "Requires systemd and python3." >&2; exit 1
+[[ "$EUID" -eq 0 ]] || { echo '请使用 sudo bash scripts/install.sh' >&2; exit 2; }
+mode="default"
+if (( $# > 0 )); then
+  [[ "$1" == "--no-trivy" ]] || { echo '仅支持可选参数 --no-trivy' >&2; exit 2; }
+  mode="no-trivy"
 fi
-SOURCE="$(cd "$(dirname "$0")/.." && pwd)"
+source_dir="$(cd "$(dirname "$0")/.." && pwd)"
+for required in python3 systemctl install; do
+  command -v "$required" >/dev/null || { echo "缺少依赖: $required" >&2; exit 2; }
+done
+for path in src/cve_guard.py src/site_discovery.py scripts/cve config.example.json systemd/cve-guard.service systemd/cve-guard.timer; do
+  [[ -f "$source_dir/$path" ]] || { echo "仓库文件不完整: $path" >&2; exit 2; }
+done
+
+if [[ "$mode" != "no-trivy" ]] && ! command -v trivy >/dev/null; then
+  echo '安装 Trivy 漏洞扫描引擎（使用 Aqua 官方签名 APT 源）...'
+  if ! bash "$source_dir/scripts/install-trivy.sh"; then
+    echo '警告：Trivy 安装失败。巡检仍可工作，但漏洞扫描会报告未完成。' >&2
+    echo '检查网络后运行: sudo bash scripts/install-trivy.sh' >&2
+  fi
+fi
+
 install -d -m 0755 /usr/local/lib/cve-guard
-install -d -m 0700 /etc/cve-guard /var/lib/cve-guard/reports /var/lib/cve-guard/cache
-install -m 0755 "$SOURCE/src/cve_guard.py" /usr/local/lib/cve-guard/cve_guard.py
-install -m 0644 "$SOURCE/src/site_discovery.py" /usr/local/lib/cve-guard/site_discovery.py
-if [[ ! -f /etc/cve-guard/config.json ]]; then
-  install -m 0600 "$SOURCE/config.example.json" /etc/cve-guard/config.json
+install -d -m 0700 /etc/cve-guard /var/lib/cve-guard /var/lib/cve-guard/cache /var/lib/cve-guard/reports
+install -m 0755 "$source_dir/src/cve_guard.py" /usr/local/lib/cve-guard/cve_guard.py
+install -m 0644 "$source_dir/src/site_discovery.py" /usr/local/lib/cve-guard/site_discovery.py
+install -m 0755 "$source_dir/scripts/cve" /usr/local/bin/cve
+
+# Protect any previous user configuration during upgrades.
+if [[ ! -e /etc/cve-guard/config.json ]]; then
+  install -m 0600 "$source_dir/config.example.json" /etc/cve-guard/config.json
 fi
-cat >/etc/systemd/system/cve-guard.service <<'UNIT'
-[Unit]
-Description=CVE Guard local read-only security audit
-After=network-online.target docker.service
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-User=root
-UMask=0077
-Environment=PYTHONDONTWRITEBYTECODE=1
-Environment=HOME=/var/lib/cve-guard
-Environment=TRIVY_CACHE_DIR=/var/lib/cve-guard/cache
-ExecStart=/usr/bin/python3 /usr/local/lib/cve-guard/cve_guard.py --config /etc/cve-guard/config.json --output-dir /var/lib/cve-guard/reports
-TimeoutStartSec=3h
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectHome=read-only
-ProtectSystem=full
-StandardOutput=journal
-StandardError=journal
-UNIT
-cat >/etc/systemd/system/cve-guard.timer <<'UNIT'
-[Unit]
-Description=Run CVE Guard local audit daily
-
-[Timer]
-OnCalendar=daily
-RandomizedDelaySec=1h
-Persistent=true
-Unit=cve-guard.service
-
-[Install]
-WantedBy=timers.target
-UNIT
-chmod 0644 /etc/systemd/system/cve-guard.service /etc/systemd/system/cve-guard.timer
+install -m 0644 "$source_dir/systemd/cve-guard.service" /etc/systemd/system/cve-guard.service
+install -m 0644 "$source_dir/systemd/cve-guard.timer" /etc/systemd/system/cve-guard.timer
 systemctl daemon-reload
-systemctl enable --now cve-guard.timer
-echo "Installed. Review /etc/cve-guard/config.json then run:"
-echo "  sudo systemctl start cve-guard.service"
-echo "  sudo journalctl -u cve-guard.service -n 100 --no-pager"
-echo "NOTE: Trivy is an optional external dependency; install it from official packages."
+systemctl enable --now cve-guard.timer >/dev/null
+echo
+echo 'CVE Guard 安装/升级完成。每天自动扫描；默认 /www/wwwroot。'
+echo '  sudo cve scan       # 立即扫描'
+echo '  sudo cve status     # 查看状态'
+echo '  sudo cve report     # 最近报告'
+echo '  sudo cve update     # 更新扫描器'
+if ! command -v trivy >/dev/null; then
+  echo '⚠️ 尚未安装 Trivy。无法完成完整 CVE 检测。'
+fi
