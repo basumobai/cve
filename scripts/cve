@@ -45,7 +45,7 @@ except (OSError, ValueError) as exc:
     raise SystemExit(1)
 PY
 }
-case "$1" in
+case "$@" in
   scan)
     root
     echo '正在扫描；首次更新漏洞数据库时可能较慢。'
