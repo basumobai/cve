@@ -196,12 +196,32 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(summary["LOW"], 1)
 
     def test_partial_scan_returns_success_after_report_saved(self):
-        with mock.patch.object(guard, "load_config", return_value={}), \
-             mock.patch.object(guard, "make_report", return_value={
-                 "vulnerabilities": [], "findings": [], "scan_errors": ["composer failed"]
-             }), mock.patch.object(guard, "save_reports", return_value=["scan.json"]):
-            with mock.patch.object(sys, "argv", ["cve_guard.py"]):
-                self.assertEqual(guard.main(), 0)
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(guard, "load_config", return_value={}), \
+                 mock.patch.object(guard, "make_report", return_value={
+                     "vulnerabilities": [], "findings": [],
+                     "scan_errors": ["composer failed"]
+                 }), mock.patch.object(guard, "save_reports", return_value=["scan-test.json"]):
+                with mock.patch.object(sys, "argv", [
+                    "cve_guard.py", "--plan-dir", d
+                ]):
+                    self.assertEqual(guard.main(), 0)
+            self.assertTrue(list(Path(d).glob("plan-*.md")))
+
+    def test_composer_legacy_reports_unsupported_audit(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "composer.lock").write_text("{}", encoding="utf-8")
+            def fake_run(args, **kwargs):
+                return {"stdout": "", "error": (
+                    "PHP Deprecated: old composer warning " * 45
+                    + 'Command "audit" is not defined.'
+                ), "returncode": 1, "ok": False, "truncated": False}
+            with mock.patch.object(guard.shutil, "which",
+                                   side_effect=lambda n: "/usr/bin/composer" if n == "composer" else None), \
+                 mock.patch.object(guard, "run", side_effect=fake_run):
+                _, vulns, errors = guard.audit_dependencies({"path": d}, 15)
+            self.assertFalse(vulns)
+            self.assertTrue(any("Composer" in e for e in errors))
 
     def test_retention_only_removes_generated_reports(self):
         with tempfile.TemporaryDirectory() as d:
