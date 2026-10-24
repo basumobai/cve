@@ -2,5 +2,13 @@
   "applications": [],
   "scan_docker_images": true,
   "scan_host_rootfs": true,
-  "timeout_seconds": 360
+  "timeout_seconds": 360,
+  "auto_discover_websites": true,
+  "web_roots": [
+    "/www/wwwroot"
+  ],
+  "max_websites": 100,
+  "web_project_depth": 3,
+  "max_web_projects": 250,
+  "scan_web_files": true
 }
