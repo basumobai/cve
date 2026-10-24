@@ -48,7 +48,7 @@ class RemediationTests(unittest.TestCase):
         md = rem.render(plan)
         self.assertIn("MySQL :3306", md)
         self.assertIn("另外 32 条", md)
-        self.assertNotIn("CVE-2026-149", md)
+        self.assertEqual(sum(1 for line in md.splitlines() if line.startswith("- **") and "CVE-2026-" in line), 119)
 
     def test_generate_plan_private_and_no_mutations(self):
         with tempfile.TemporaryDirectory() as d:
