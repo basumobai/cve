@@ -1,0 +1,12 @@
+# Never publish production scan output, secrets or local runtime config
+config.local.json
+config.json
+.env
+.env.*
+!.env.example
+reports/
+*.log
+__pycache__/
+*.py[cod]
+.coverage
+.pytest_cache/
