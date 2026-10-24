@@ -172,3 +172,33 @@ sudo bash scripts/install.sh
 sudo cve scan
 sudo cve report
 ```
+
+## 8. 运行环境风险分层（v0.3）
+
+旧版报告会把数万条软件包匹配全部按照 CVE 严重程度排序，导致历史内核头文件占据第一页。新版报告保留全部原始结果和严重程度，但新增以下**排查语境**：
+
+| 分层 | 判定条件 | 解读 |
+|---|---|---|
+| 已安装组件 | 应用、镜像或其他已安装包 | 优先核查运行状态、暴露面、受影响配置和官方公告 |
+| 当前运行内核相关 | 宿主机的 `linux-image-*`、`linux-modules-*` 版本与 `uname -r` 对应 | 需核对 Ubuntu 对应内核的安全公告及回移补丁 |
+| 内核开发包 | `linux-headers-*`、`linux-tools-*`、`linux-libc-dev` 等 | 本身不能证明运行内核存在对应风险，但仍保留匹配 |
+| 非当前运行内核 | 已安装的 `linux-image-*`、`linux-modules-*` 版本与当前内核不匹配 | 当前未在运行；若以后启动该内核，仍可能相关 |
+| 内核版本未知 | 无法可靠与当前内核对应 | 保留并要求人工核查 |
+
+分层只是解释“扫描命中了什么”，**不会擅自判定漏洞已修复、误报或可被远程利用**。同一漏洞编号可能跨类别出现，不能把各类别唯一编号数相加。完整结果始终在 `scan-*.json`，修复方案详情在 `plan-*.json`。
+
+- `sudo cve report` 按分层优先级展示前 150 条。
+- `sudo cve plan` 先展示配置风险与应用/镜像候选项，Markdown 最多列出 120 条；其余仍保存于私有 JSON。
+- Composer 审计先识别 CLI 版本；低于 2.4 的 Composer 会被标记为**未完成审计**，提示管理员升级 CLI，绝不会运行 `composer update` 或更改项目依赖。
+- 自动扫描仍是只读的；**只有 `sudo cve apply` 且完成交互确认才有可能执行 APT 升级**。
+
+升级后在原有项目目录运行：
+
+```bash
+sudo cve update
+sudo cve scan
+sudo cve report
+sudo cve plan
+```
+
+这些命令不会直接升级你的网站。命令中的 `cve update` 只更新扫描工具。
