@@ -2,14 +2,71 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+import sys
 
 source = Path(__file__).resolve().parents[1] / "src" / "cve_guard.py"
+sys.path.insert(0, str(source.parent))
 spec = importlib.util.spec_from_file_location("cve_guard", source)
 guard = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(guard)
 
 
 class GuardTests(unittest.TestCase):
+    def test_auto_discover_wwwroot_and_nested_apps(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "www" / "wwwroot"
+            root.mkdir(parents=True)
+            (root / "php-site").mkdir()
+            (root / "php-site" / "artisan").touch()
+            (root / "php-site" / "composer.lock").write_text("{}", encoding="utf-8")
+            (root / "php-site" / "node_modules").mkdir()
+            (root / "php-site" / "node_modules" / "untrusted").mkdir()
+            (root / "php-site" / "node_modules" / "untrusted" / "package-lock.json").touch()
+            (root / "node-site" / "frontend").mkdir(parents=True)
+            (root / "node-site" / "frontend" / "pnpm-lock.yaml").touch()
+            (root / "static-site").mkdir()
+            (root / "static-site" / "index.html").touch()
+            sites, warnings = guard.discover_websites([str(root)])
+            self.assertEqual({s["name"] for s in sites},
+                             {"php-site", "node-site", "static-site"})
+            php = next(s for s in sites if s["name"] == "php-site")
+            node = next(s for s in sites if s["name"] == "node-site")
+            self.assertIn("Laravel", php["technologies"])
+            self.assertIn("Node.js", node["technologies"])
+            self.assertEqual(len(php["projects"]), 1)
+            self.assertEqual(len(node["projects"]), 1)
+            self.assertEqual(warnings, [])
+
+    def test_discovery_does_not_follow_site_symlinks(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "wwwroot"
+            root.mkdir()
+            outside = Path(temp) / "outside"
+            outside.mkdir()
+            (outside / "composer.lock").touch()
+            (root / "outside-link").symlink_to(outside, target_is_directory=True)
+            (root / "site").mkdir()
+            sites, warnings = guard.discover_websites([str(root)])
+            self.assertEqual([s["name"] for s in sites], ["site"])
+            self.assertTrue(any("symlink" in msg for msg in warnings))
+
+    def test_discovery_limit_and_missing_root(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "wwwroot"
+            root.mkdir()
+            for name in ("a", "b", "c"):
+                (root / name).mkdir()
+            sites, warnings = guard.discover_websites(
+                [str(root), str(root / "missing")], max_sites=2)
+            self.assertEqual(len(sites), 2)
+            self.assertTrue(any("limit" in msg for msg in warnings))
+
+    def test_default_config_enables_www_scanning(self):
+        config = guard.load_config(None)
+        self.assertTrue(config["auto_discover_websites"])
+        self.assertTrue(config["scan_web_files"])
+        self.assertIn("/www/wwwroot", config["web_roots"])
+
     def test_trivy_conversion(self):
         payload = {"Results": [
             {"Target": "image", "Vulnerabilities": [
