@@ -3,6 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 import sys
+from unittest import mock
 
 source = Path(__file__).resolve().parents[1] / "src" / "cve_guard.py"
 sys.path.insert(0, str(source.parent))
@@ -66,6 +67,36 @@ class GuardTests(unittest.TestCase):
         self.assertTrue(config["auto_discover_websites"])
         self.assertTrue(config["scan_web_files"])
         self.assertIn("/www/wwwroot", config["web_roots"])
+
+    def test_report_scans_auto_discovered_site_and_nested_lockfiles(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "wwwroot"
+            app = root / "example.com"
+            app.mkdir(parents=True)
+            (app / "composer.lock").write_text("{}", encoding="utf-8")
+            config = guard.load_config(None)
+            config.update({
+                "web_roots": [str(root)],
+                "scan_host_rootfs": False,
+                "scan_docker_images": False,
+                "applications": [],
+            })
+            with mock.patch.object(guard, "get_os", return_value={
+                "distribution": "Ubuntu", "kernel": "generic"
+            }), mock.patch.object(guard, "inventory", return_value={}), \
+                 mock.patch.object(guard, "ports_audit", return_value=([], [], None)), \
+                 mock.patch.object(guard, "docker_audit", return_value=([], [], [], None)), \
+                 mock.patch.object(guard, "trivy_scan", return_value=([], None)) as scanner, \
+                 mock.patch.object(guard, "audit_dependencies", return_value=([], [], [])) as dependencies, \
+                 mock.patch.object(guard.shutil, "which", return_value=None):
+                report = guard.make_report(config)
+            self.assertEqual(len(report["websites"]), 1)
+            self.assertEqual(report["websites"][0]["name"], "example.com")
+            self.assertTrue(any("website fs:" in s for s in report["scan_coverage"]))
+            scanner.assert_called_once()
+            self.assertEqual(scanner.call_args.args[:2], ("fs", str(app)))
+            dependencies.assert_called_once()
+            self.assertEqual(dependencies.call_args.args[0]["path"], str(app))
 
     def test_trivy_conversion(self):
         payload = {"Results": [
