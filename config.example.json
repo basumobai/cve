@@ -1,6 +1,6 @@
 {
   "applications": [],
   "scan_docker_images": true,
-  "scan_host_rootfs": false,
+  "scan_host_rootfs": true,
   "timeout_seconds": 360
 }
