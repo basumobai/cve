@@ -28,6 +28,28 @@ class RemediationTests(unittest.TestCase):
         self.assertFalse(plan["items"][0]["automated"])
         self.assertIn("不会自动升级", rem.render(plan))
 
+    def test_plan_prioritizes_configuration_and_limits_markdown(self):
+        issues = [
+            {"id": f"CVE-2026-{i}", "package": "linux-modules-6.8.0-138-generic",
+             "target": "/", "severity": "CRITICAL", "installed": "6.8.0-138.138"}
+            for i in range(150)
+        ]
+        issues.append({"id": "CVE-2026-999", "package": "openssl",
+                       "target": "example:image", "severity": "HIGH"})
+        report = {"timestamp_utc": "now", "host": {"kernel": "6.8.0-147-generic"},
+                  "vulnerabilities": issues, "scan_errors": [],
+                  "findings": [{"severity": "HIGH", "evidence": "MySQL :3306",
+                                "remediation": "restrict access"}]}
+        plan = rem.build_plan(report, Path("/var/lib/cve-guard/reports/scan-test.json"))
+        self.assertEqual(len(plan["items"]), 152)
+        self.assertEqual(plan["items"][0]["risk_category"], "configuration")
+        self.assertEqual(plan["items"][1]["risk_category"], "installed_component")
+        self.assertFalse(any(x["automated"] for x in plan["items"]))
+        md = rem.render(plan)
+        self.assertIn("MySQL :3306", md)
+        self.assertIn("另外 32 条", md)
+        self.assertNotIn("CVE-2026-149", md)
+
     def test_generate_plan_private_and_no_mutations(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
