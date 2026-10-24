@@ -115,7 +115,7 @@ def render(plan):
              "> 此报告只提供建议；不执行生产环境修改。"]
     if plan["scan_incomplete"]:
         lines += ["", "## 扫描未完成", ""]
-        lines += ["- " + str(error).replace("\\n", " ") for error in
+        lines += ["- " + str(error).replace("\n", " ") for error in
                   plan.get("scan_errors", [])[:30]]
         if len(plan.get("scan_errors", [])) > 30:
             lines.append("- 其余错误请查看扫描 JSON。")
@@ -138,7 +138,7 @@ def render(plan):
                  item["id"], item["package"], item["target"],
                  "已安装：" + item["installed"], "修复：" + item["fixed"],
                  "建议：" + item["action"]]
-        lines.append("- " + " | ".join(str(p).replace("\\n", " ") for p in parts if p))
+        lines.append("- " + " | ".join(str(p).replace("\n", " ") for p in parts if p))
     if not items:
         lines.append("- 当前成功覆盖的检查无已报告风险，不代表系统安全。")
     if len(items) > 120:
@@ -153,7 +153,7 @@ def render(plan):
               "", "历史内核匹配和头文件不等于当前运行内核存在可利用漏洞；",
               "但历史内核仍然已安装，必要时需检查启动项及保留策略。",
               "APT 更新可能重启服务，执行前请准备备份和维护窗口。"]
-    return "\\n".join(lines) + "\\n"
+    return "\n".join(lines) + "\n"
 
 
 def generate(report_dir=REPORTS, plan_dir=PLANS):
