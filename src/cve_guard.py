@@ -18,6 +18,7 @@ import tempfile
 
 from site_discovery import discover_websites
 from remediation import build_plan, render, write_private
+from risk import enrich, LABELS, presentation_key
 
 SENSITIVE_PORTS = {
     2375: "Docker API (unencrypted)",
@@ -125,8 +126,13 @@ def inventory():
     php_bins = sorted(Path("/www/server/php").glob("*/bin/php")) if Path("/www/server/php").exists() else []
     if shutil.which("php"):
         php_bins.append(Path(shutil.which("php")))
+    seen_php_paths = set()
     for php in php_bins:
         if php.exists():
+            real_path = str(php.resolve())
+            if real_path in seen_php_paths:
+                continue
+            seen_php_paths.add(real_path)
             versions["php:" + str(php)] = command_version([str(php), "-v"])
     # aaPanel/BT often install software outside PATH and APT.
     extra = {
@@ -300,8 +306,11 @@ def audit_dependencies(app, timeout):
             output = result["stdout"].strip()
             # Old Composer versions may print notices before JSON. Never
             # interpret missing or malformed JSON as a clean audit.
+            if 'Command "audit" is not defined' in result["error"] or \
+                    'Command "audit" is not defined' in output:
+                raise ValueError("当前 Composer 不支持 audit 命令；需 Composer >= 2.4。仅升级 Composer CLI，不要执行 composer update")
             if not output.startswith("{"):
-                raise ValueError("Composer did not return JSON (upgrade Composer 2)")
+                raise ValueError("Composer 未输出有效 JSON；检查 Composer 版本、插件与仓库网络")
             data = json.loads(output)
             if not isinstance(data, dict) or data.get("error") or data.get("errors"):
                 raise ValueError("composer audit returned errors")
@@ -492,7 +501,7 @@ def make_report(config):
             report["scan_errors"].append("apt list: " + result["error"])
     report["vulnerabilities"] = distinct_vulnerabilities(report["vulnerabilities"])
     report["scan_errors"] = distinct_messages(report["scan_errors"])
-    return report
+    return enrich(report)
 
 
 def markdown_report(report):
@@ -505,11 +514,18 @@ def markdown_report(report):
         f"- 软件包漏洞匹配数（非独立漏洞）: " + ", ".join(f"{s}={n}" for s, n in counts.items()),
         "- 去重漏洞编号数: " + ", ".join(f"{s}={n}" for s, n in unique_cve_counts(report).items()),
         "- 注意：同一 CVE 可影响多个包；漏洞匹配不等于实际可利用。",
+        "- 风险分层仅表示包与运行环境的关系，不等于已核实漏洞或已修复状态。",
         f"- 配置/维护发现: {len(report['findings'])}",
         f"- 未完成检查: {len(report['scan_errors'])}",
         "", "## 扫描覆盖", "",
     ]
     lines += ["- " + v for v in report["scan_coverage"]] or ["- 尚未成功进行任何扫描"]
+    summary = report.get("risk_summary", {})
+    categories = summary.get("package_matches", {})
+    lines += ["", "## 风险分层（匹配条数）", ""]
+    for category, label in LABELS.items():
+        lines.append(f"- {label}: {categories.get(category, 0)}")
+    lines += ["- 旧内核镜像/模块、开发头文件仍保留在完整 JSON；不会因此判定安全。"]
     lines += ["", "## 自动发现的网站", ""]
     for site in report.get("websites", []):
         technologies = ", ".join(site.get("technologies", [])) or "Unknown/static"
@@ -523,15 +539,14 @@ def markdown_report(report):
         lines.append(f"- **{f['severity']}** {f['title']} — {f['evidence']}；建议：{f['remediation']}")
     if not report["findings"]:
         lines.append("- 在已覆盖的检查中未发现配置风险；不等于系统安全。")
-    lines += ["", "## 漏洞（最多展示前 150 条，完整数据见 JSON）", ""]
-    lines += ["- 主机内核包匹配包含非运行中的旧内核/headers；请结合运行内核和发行版安全公告复核。"]
-    priority = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "UNKNOWN": 4}
-    for v in sorted(report["vulnerabilities"],
-                    key=lambda v: priority.get(v.get("severity"), 5))[:150]:
+    lines += ["", "## 漏洞候选项（优先展示前 150 条，全部记录见 JSON）", ""]
+    lines += ["- 先显示应用/容器及当前内核，再显示内核开发包与未运行旧内核；这只是排查顺序。"]
+    for v in sorted(report["vulnerabilities"], key=presentation_key)[:150]:
         fields = [v.get("id"), v.get("package"), v.get("installed"),
                   v.get("fixed"), v.get("target")]
         cleaned = [str(value or "-").replace("|", "/").replace("\n", " ") for value in fields]
-        lines.append(f"- **{v.get('severity', 'UNKNOWN')}** {cleaned[0]} | "
+        category = LABELS.get(v.get("risk_category"), "待核实")
+        lines.append(f"- **{v.get('severity', 'UNKNOWN')}** [{category}] {cleaned[0]} | "
                      f"包: {cleaned[1]} | 已装: {cleaned[2]} | 修复: {cleaned[3]} | 来源: {cleaned[4]}")
     if not report["vulnerabilities"]:
         lines.append("- 未发现或未成功扫描漏洞；请核对上方扫描覆盖和错误，不可直接视为无漏洞。")
@@ -567,6 +582,7 @@ def main():
     parser = argparse.ArgumentParser(description="Read-only local VPS CVE/config audit")
     parser.add_argument("--config", default=None, help="local config JSON")
     parser.add_argument("--output-dir", default="/var/lib/cve-guard/reports")
+    parser.add_argument("--plan-dir", default="/var/lib/cve-guard/plans")
     args = parser.parse_args()
     try:
         config = load_config(args.config)
@@ -575,7 +591,7 @@ def main():
         # Generate a plan even if some checks were incomplete; never execute repairs.
         source = Path(paths[0])
         plan = build_plan(report, source)
-        plan_path = Path("/var/lib/cve-guard/plans") / source.name.replace("scan-", "plan-", 1)
+        plan_path = Path(args.plan_dir) / source.name.replace("scan-", "plan-", 1)
         write_private(plan_path, json.dumps(plan, ensure_ascii=False, indent=2) + "\n")
         write_private(plan_path.with_suffix(".md"), render(plan))
         plans = sorted(p for p in plan_path.parent.glob("plan-*.json")
@@ -589,7 +605,8 @@ def main():
     print(json.dumps({"reports": paths, "vulnerabilities": len(report["vulnerabilities"]),
                       "findings": len(report["findings"]),
                       "scan_errors": len(report["scan_errors"])}, ensure_ascii=False))
-    # Incomplete probes remain visible in the report; a successful report\n    # generation is not a crashed systemd oneshot task.\n    return 0
+    # Partial probe failures remain visible; generating the report is successful.
+    return 0
 
 
 if __name__ == "__main__":
