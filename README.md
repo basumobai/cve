@@ -1,75 +1,86 @@
-# CVE Guard — Ubuntu VPS 安全巡检
+# CVE Guard
 
-面向 Ubuntu 24.04、宝塔/aaPanel、PHP/Laravel、Next.js、Docker、PostgreSQL、Redis、Nginx/OpenResty 的**本地安全巡检代理**。
+**Ubuntu VPS 安全巡检。自动发现宝塔 / aaPanel 的网站目录，检查服务器、依赖和 Docker 镜像的已知漏洞。**
 
-> 安全边界：**GitHub Actions 不能直接检查没有部署代理的 VPS**。此仓库的定时任务只测试扫描程序；真实资产扫描必须由 VPS 上的 systemd timer 本地运行。扫描不会主动攻击服务，不执行漏洞利用。
+- 默认扫描：Ubuntu 24.04、`/www/wwwroot/*`、PHP / Composer、Node.js / Next.js、Docker、Redis / PostgreSQL 等常见服务
+- 每天自动巡检，漏洞库由 Trivy 按需更新
+- **只读检查**：不会自动改动网站代码、PHP、数据库或容器；扫描结果**只保留在服务器本地**
+- 适合个人 VPS 和小型自建站点；不会尝试利用漏洞或破解服务
 
-## 功能与结果
+> [!IMPORTANT]
+> GitHub Actions 只能对本仓库做代码测试，**不会自动连接你的 VPS**。你必须在自己的服务器部署代理，才能看到真实漏洞报告。
 
-- 系统/软件盘点、监听地址与敏感端口提示、Docker 特权容器与 Docker Socket 挂载检查。
-- 默认**自动扫描宝塔 / aaPanel 网站根目录 `/www/wwwroot/`**：枚举每个网站目录（包括静态网站），深入查找 Laravel、Composer、Node.js、Next.js 相关锁文件；无需一站一站添加路径。
-- 调用已安装的 **Trivy** 检查网站目录、容器镜像和宿主机 rootfs（网站目录在 rootfs 扫描中跳过以减少重复）。Trivy 每次运行会按缓存策略刷新漏洞数据库。
-- 对自动发现或手动配置的项目分别运行 npm audit / composer audit（有对应锁文件、工具可用时）。仅有 yarn/pnpm/bun 锁文件的项目通过 Trivy 文件扫描尝试识别依赖漏洞，不强行使用 npm audit。
-- 自动生成本地 JSON 和 Markdown 报告，区分“发现风险”“扫描失败”“无法检查”，绝不将扫描失败当作零漏洞。
-- systemd 每天自动扫描；可**显式选择**启用 Ubuntu unattended-upgrades 的安全更新策略。数据库、PHP 大版本、容器镜像和应用更新一律不自动变更。
-- 无需 VPS 密码、SSH 私钥、Cloudflare Token 或 GitHub Token。
+## 1. 安装（首次只需一次）
 
-## 安装（在你自己的 Ubuntu VPS 上）
-
-克隆仓库、审查脚本，再运行安装程序：
+Ubuntu 24.04 上通过 SSH 执行：
 
 ```bash
-git clone https://github.com/basumobai/cve.git /opt/cve-guard
-cd /opt/cve-guard
-sudo bash scripts/install.sh
+sudo git clone https://github.com/basumobai/cve.git /opt/cve-guard
+sudo bash /opt/cve-guard/scripts/install.sh
+sudo cve scan
 ```
 
-安装脚本检查 Python3，安装 systemd 单元和配置模板，**不自动下载或安装 Trivy**。建议单独执行以下可审计的可选安装脚本，从 Trivy 官方签名 APT 仓库安装漏洞扫描器：
+安装时会自动安装缺失的 Trivy（添加 Aqua 官方签名 APT 源）、写入 systemd 服务并启动每日定时任务；**首次扫描由最后一条命令手动触发**。
+
+如果已经安装过旧版，直接使用 `sudo cve update`；若旧版还没有 `cve` 命令，执行：
 
 ```bash
-sudo bash scripts/install-trivy.sh
+cd /opt/cve-guard && git pull --ff-only && sudo bash scripts/install.sh
 ```
 
-也可参考 [Trivy 官方安装说明](https://trivy.dev/latest/getting-started/installation/) 手动安装。没有 Trivy 时报告会标记扫描未完成。
+使用非 root 账户克隆仓库的旧用户，请用原账户执行 `git pull`；`sudo cve update` 可能受到 Git 目录所有权安全检查限制。
 
-配置（本地文件不要提交到 GitHub）：
+## 2. 日常使用（只记住 4 条）
+
+| 命令 | 做什么 |
+|---|---|
+| `sudo cve scan` | 立即扫描并显示漏洞数量、扫描失败数量 |
+| `sudo cve status` | 查看每日巡检状态、最近一次扫描摘要 |
+| `sudo cve report` | 在终端查看最新详细报告 |
+| `sudo cve update` | 更新扫描器代码和服务配置，**不会升级你的站点** |
+
+报告存放在 `/var/lib/cve-guard/reports/`（JSON + Markdown）。报告目录仅 root 可读，默认保留最近 **30 次**。若扫描退出非零，通常是有检查没有完成；可以先运行：
 
 ```bash
-sudo cp config.example.json /etc/cve-guard/config.json
-sudo nano /etc/cve-guard/config.json
-sudo systemctl start cve-guard.service
-sudo systemctl status cve-guard.service
-sudo journalctl -u cve-guard.service --no-pager -n 100
-sudo ls -l /var/lib/cve-guard/reports
+sudo journalctl -u cve-guard.service -n 100 --no-pager
 ```
 
-默认自动检测 `/www/wwwroot` 下的网站目录（包括 `/www/wwwroot/example.com` 这样的域名目录），并扫描整个站点目录及最多 3 层的嵌套项目清单，常见 PHP/Laravel/Next.js/Node.js 项目无需逐个配置。`applications` 仅用于添加不在网站目录下的其他项目，比如 Learning 项目所在的独立目录。**Docker 容器内的应用不会自动被扫描成宿主项目**；Trivy 的镜像扫描负责容器镜像内依赖。
- 
-扫描器只读取本机内容，发现的路径与漏洞不会上传到 GitHub。默认不跟随网站目录里的符号链接（防止跑到站外的敏感目录）；被跳过的链接会报告为未覆盖。如网站是 `/www/wwwroot/site/current -> /srv/releases/...`，请单独将真实项目路径添加到 `applications`。
-
-检查定时任务：
+定时任务可以这样查看：
 
 ```bash
-sudo systemctl status cve-guard.timer
 sudo systemctl list-timers cve-guard.timer
 ```
 
-可选择自动安装 Ubuntu 官方安全包补丁（**非默认**，需要自行审查 apt policy、备份并接受计划内重启风险）：
+## 3. 默认会扫描哪些内容？
+
+| 目标 | 检查方式 | 说明 |
+|---|---|---|
+| Ubuntu 宿主机 | Trivy `rootfs`、APT 可更新包 | 考虑发行版安全回移补丁；仍需人工确认 |
+| `/www/wwwroot` | 自动发现一级网站目录、Trivy `fs` | 包括静态网站，默认最多 100 个 |
+| PHP / Laravel | 发现 Composer 清单、运行 `composer audit` | 审计依赖，不会执行 PHP 网站 |
+| Next.js / Node.js | 发现 npm/pnpm/yarn/bun 锁文件 | `package-lock.json` 可使用 `npm audit`；其他锁文件主要由 Trivy 处理 |
+| Docker | 扫描正在运行容器使用的镜像 | 同时检查特权模式、Docker Socket、host network/PID |
+| Nginx / OpenResty / Redis / PostgreSQL | 版本盘点、敏感监听端口提示 | 不是运行时渗透测试 |
+| 宝塔 / aaPanel | 检测面板安装和 /www 目录中的软件 | **不是**完整的面板插件漏洞数据库 |
+
+项目检测深度默认为网站根目录以下 **3 层**，最多累计 250 个项目。为了控制性能和避免不必要地读取隐私文件，自动搜索跳过 `node_modules`、`vendor`、`uploads`、`storage`、`logs`、`backups`、`.git` 等；**不会沿目录符号链接扫描站外文件**。因此发现并不保证覆盖全部依赖；跳过的目录、扫描失败会在报告中标明。
+
+## 4. 可选配置
+
+只有网站不在 `/www/wwwroot` 下、需要额外扫描某个项目，或需要节省磁盘/扫描时间时，才需要修改：
 
 ```bash
-sudo bash scripts/enable-ubuntu-security-updates.sh
+sudo nano /etc/cve-guard/config.json
 ```
 
-它使用发行版的 unattended-upgrades，修改的是 Ubuntu apt 安全更新行为，而不是直接给第三方 aaPanel/PHP/数据库软件打补丁。不会自动重启服务器（受其他系统现有配置影响，请自行复核）。
-
-## 配置
-
-参见 config.example.json。默认对宿主机 rootfs、网站目录、可访问 Docker 镜像进行扫描，大型服务器可能耗费较长时间与磁盘空间。可将 `scan_host_rootfs`、`scan_web_files` 或 `scan_docker_images` 改为 `false`。
-
-网站相关的默认配置为：
+默认设置参考 [config.example.json](config.example.json)：
 
 ```json
 {
+  "applications": [],
+  "scan_docker_images": true,
+  "scan_host_rootfs": true,
+  "timeout_seconds": 360,
   "auto_discover_websites": true,
   "web_roots": ["/www/wwwroot"],
   "max_websites": 100,
@@ -79,37 +90,43 @@ sudo bash scripts/enable-ubuntu-security-updates.sh
 }
 ```
 
-如果你已有旧版 `/etc/cve-guard/config.json`，**无需重置配置**：以上默认值在新扫描器中自动生效。希望扫描自定义网站目录，可修改 `web_roots`（例如另加 `/srv/www`）；可对单独部署的项目追加到 `applications`。
+如想额外检查独立部署的 Learning 项目：
 
-为了控制误扫和开销，自动搜索跳过 `node_modules`、`vendor`、`storage`、`uploads`、`logs`、`cache`、`backups`、`.git` 等目录，既不执行网站 PHP/JavaScript 代码，也不读取数据库密码进行网络连接。**这不是 WebShell/恶意文件查杀器**；无锁文件或缺少扫描工具不意味着代码没有漏洞。
-
-## 安全注意
-
-- **仓库是公开的**：不要 push /var/lib/cve-guard/reports、.env、密码、真实 IP、容器环境变量和数据库连接串。
-- 默认扫描结果仅保存在目标 VPS，目录权限 0700，报告权限 0600。
-- 无 Trivy/无网络/无权限/无锁文件时会输出“未检查”，绝不声称安全。
-- 开放监听不代表真的从公网可达：还要结合云防火墙、UFW、反向代理和 Cloudflare 核对。
-- Ubuntu 内核和 APT 包可能含发行版回移补丁：不要只根据上游版本号判断受影响状态。
-- 自动更新可能中断业务。此项目不会自动升级 PHP 大版本、修改 Docker Compose 或在生产容器执行 npm audit fix / composer update。
-- 执行 shell 脚本前先审核代码。本仓库不提供渗透或漏洞利用能力。
-
-## GitHub CI
-
-.github/workflows/ci.yml 会在推送、PR 和每周定时执行单元测试；Dependabot 每周提出 GitHub Actions 依赖更新 PR。**CI 的宿主机是 GitHub Runner，不是你的 VPS。**
-
-## 手动运行
-
-```bash
-python3 src/cve_guard.py --config config.example.json --output-dir /tmp/cve-guard-reports
-python3 -m unittest discover -s tests -v
+```json
+"applications": [{"name": "learning", "path": "/opt/learning"}]
 ```
 
-## 手动更新本项目扫描器
+上面只是配置片段，需放入完整 JSON 对象中；路径请换成真实宿主机目录。**不要**把带有真实服务器路径、IP、口令的本地配置或报告提交到此公开仓库。
 
-在克隆目录执行 `git pull --ff-only`，然后 `sudo bash scripts/install.sh` 以更新部署的代码。新增的网站发现功能需要同时安装 `site_discovery.py`，因此只 `git pull` 而不重新运行安装脚本不会更新已经部署的服务。GitHub 不会擅自向你的 VPS 推送未知代码；每天的 Trivy CVE 数据库按工具自身更新策略自动刷新。
+配置变更后运行 `sudo cve scan` 即可生效；不需要重装。
 
-## 当前边界
+## 5. 自动更新：有哪些、没有哪些？
 
-- 尚未接入任何真实 VPS，不存在现成的生产扫描结果。
-- 面板漏洞是否受影响必须由厂商构建版本/安全公告验证，不能靠推测 CVE。
-- Trivy、npm audit、composer audit 的覆盖范围各不同；任何单一工具都不能证明服务器无漏洞。
+- **每天**：systemd 自动执行本机巡检。Trivy 按缓存/网络状态更新自己的漏洞数据库。
+- **每周**：GitHub CI 测试代码，Dependabot 针对仓库工作流依赖提出 PR。
+- **手动**：`sudo cve update` 更新扫描器程序；不自动部署未经审核的远程代码。
+- **可选**：`sudo cve enable-updates` 启用 Ubuntu 的 unattended-upgrades，安装适用的系统包安全补丁。**此命令会修改 APT 更新设置**，执行前应备份、审查升级来源和维护策略。
+- **永不自动执行**：PHP 大版本升级、Composer 更新、`npm audit fix`、数据库迁移、Docker 镜像更新或容器重建。
+
+首次 Trivy 扫描可能下载体积较大的漏洞数据库。软件源不可达、空间不足、镜像拉取失败、文件权限不足时，报告应显示扫描未完成，而不是把漏洞数量 0 当作安全结论。
+
+## 6. 安全与局限
+
+1. **本工具不能证明“无漏洞”**，也不是 WebShell 检测或全面源代码审计。可用于快速找出已知依赖 CVE 和一部分常见错误配置。
+2. 端口监听所有地址 ≠ 已经公网可访问；还要综合云防火墙、UFW 和 Cloudflare 规则。
+3. 不要因为版本号看起来旧，就断言 Ubuntu 包仍存在漏洞：发行版可能回移安全修复。
+4. 扫描器以 root 运行用于读取本机包/容器信息，安装前请审查脚本。Docker Socket 访问等效于高权限访问，应保护主机。
+5. 报告可能含应用路径、镜像名等内部信息，权限设为 `0700/0600`，不通过 GitHub 自动上传。
+6. 如果生产网站使用指向其他目录的 `current` 符号链接，请把真实目录手动加入 `applications`；本工具不会跟随该链接。
+
+## 开发与自检
+
+```bash
+python3 -m unittest discover -s tests -v
+python3 -m py_compile src/cve_guard.py src/site_discovery.py
+bash -n scripts/*.sh scripts/cve
+```
+
+项目仅使用 Python 标准库组织扫描，依赖 Trivy、npm、Composer 的实际安全数据库作已知漏洞判断；可用扫描器缺失时会记录未覆盖范围。
+
+本项目用于检测和维护**你有权管理的服务器**，没有远程漏洞利用、口令破解或攻击模块。
