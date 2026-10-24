@@ -15,7 +15,6 @@ CVE Guard · Ubuntu 安全巡检
   sudo cve prepare          模拟 APT 升级并准备候选清单（不修改系统）
   sudo cve apply            交互确认后升级 APT 包
   sudo cve update           快进更新本项目程序（不更新网站）
-  sudo cve enable-updates   可选启用 Ubuntu 安全补丁安装
   cve help                  帮助
 报告仅保存在本机 /var/lib/cve-guard/reports
 HELP
@@ -91,10 +90,6 @@ case "$@" in
     git -C "$REPO" pull --ff-only
     bash "$REPO/scripts/install.sh" --no-trivy
     echo '扫描器更新完成。如需立即检查，请运行 sudo cve scan'
-    ;;
-  enable-updates)
-    root
-    bash "$REPO/scripts/enable-ubuntu-security-updates.sh"
     ;;
   help|-h|--help|"") help ;;
   *) help >&2; exit 2 ;;
