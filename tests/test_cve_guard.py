@@ -196,7 +196,7 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(summary["LOW"], 1)
 
     def test_partial_scan_returns_success_after_report_saved(self):
-        with mock.patch.object(guard, "load_config", return_value={}), \\
+        with mock.patch.object(guard, "load_config", return_value={}), \
              mock.patch.object(guard, "make_report", return_value={
                  "vulnerabilities": [], "findings": [], "scan_errors": ["composer failed"]
              }), mock.patch.object(guard, "save_reports", return_value=["scan.json"]):
