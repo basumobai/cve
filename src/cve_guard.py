@@ -51,7 +51,7 @@ def finding(kind, severity, title, evidence, remediation):
 
 def load_config(path):
     default = {"applications": [], "scan_docker_images": True,
-               "scan_host_rootfs": False, "timeout_seconds": 360}
+               "scan_host_rootfs": True, "timeout_seconds": 360}
     if path:
         with open(path, "r", encoding="utf-8") as f:
             value = json.load(f)
@@ -108,6 +108,15 @@ def inventory():
     for php in php_bins:
         if php.exists():
             versions["php:" + str(php)] = command_version([str(php), "-v"])
+    # aaPanel/BT often install software outside PATH and APT.
+    extra = {
+        "bt_nginx": "/www/server/nginx/sbin/nginx",
+        "bt_openresty": "/www/server/openresty/nginx/sbin/nginx",
+        "bt_mysql_client": "/www/server/mysql/bin/mysql",
+    }
+    for name, binary in extra.items():
+        if Path(binary).is_file() and os.access(binary, os.X_OK):
+            versions[name] = command_version([binary, "-v" if "nginx" in name or "openresty" in name else "--version"])
     versions["panel_detected"] = {
         "aapanel_or_bt": Path("/www/server/panel").exists(),
         "1panel": Path("/opt/1panel").exists(),
