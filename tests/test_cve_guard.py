@@ -183,6 +183,26 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(guard.counts_by_severity(
             {"vulnerabilities": result})["HIGH"], 1)
 
+    def test_unique_advisories_separate_from_package_matches(self):
+        report = {"vulnerabilities": [
+            {"id": "CVE-2026-1234", "severity": "HIGH", "package": "a"},
+            {"id": "CVE-2026-1234", "severity": "CRITICAL", "package": "b"},
+            {"id": "CVE-2026-5678", "severity": "LOW", "package": "c"},
+        ]}
+        self.assertEqual(guard.counts_by_severity(report)["HIGH"], 1)
+        summary = guard.unique_cve_counts(report)
+        self.assertEqual(summary["CRITICAL"], 1)
+        self.assertEqual(summary["HIGH"], 0)
+        self.assertEqual(summary["LOW"], 1)
+
+    def test_partial_scan_returns_success_after_report_saved(self):
+        with mock.patch.object(guard, "load_config", return_value={}), \\
+             mock.patch.object(guard, "make_report", return_value={
+                 "vulnerabilities": [], "findings": [], "scan_errors": ["composer failed"]
+             }), mock.patch.object(guard, "save_reports", return_value=["scan.json"]):
+            with mock.patch.object(sys, "argv", ["cve_guard.py"]):
+                self.assertEqual(guard.main(), 0)
+
     def test_retention_only_removes_generated_reports(self):
         with tempfile.TemporaryDirectory() as d:
             outdir = Path(d) / "reports"
