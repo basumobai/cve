@@ -61,7 +61,7 @@ sudo bash scripts/enable-ubuntu-security-updates.sh
 
 ## 配置
 
-参见 config.example.json。建议先将 scan_host_rootfs 设为 false；大型服务器使用 Trivy 扫描整个 rootfs 可能耗费较长时间与磁盘空间。镜像扫描默认开启，需要有 Docker 权限与 Trivy。
+参见 config.example.json。默认对宿主机 rootfs 扫描，也扫描可访问的 Docker 镜像；大型服务器使用 Trivy 扫描整个 rootfs 可能耗费较长时间与磁盘空间，可将 scan_host_rootfs 设为 false。镜像扫描需要 Docker 权限与 Trivy。
 
 ## 安全注意
 
@@ -83,6 +83,10 @@ sudo bash scripts/enable-ubuntu-security-updates.sh
 python3 src/cve_guard.py --config config.example.json --output-dir /tmp/cve-guard-reports
 python3 -m unittest discover -s tests -v
 ```
+
+## 手动更新本项目扫描器
+
+在克隆目录执行 git pull --ff-only，然后 sudo bash scripts/install.sh 以更新部署的代码。GitHub 不会擅自向你的 VPS 推送未知代码；每天的 Trivy CVE 数据库按工具自身更新策略自动刷新。
 
 ## 当前边界
 
