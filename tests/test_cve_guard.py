@@ -98,6 +98,43 @@ class GuardTests(unittest.TestCase):
             dependencies.assert_called_once()
             self.assertEqual(dependencies.call_args.args[0]["path"], str(app))
 
+    def test_failed_website_scan_retries_project_scan(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "wwwroot"
+            site = root / "example.com"
+            site.mkdir(parents=True)
+            (site / "composer.lock").write_text("{}", encoding="utf-8")
+            config = guard.load_config(None)
+            config.update({"web_roots": [str(root)], "scan_host_rootfs": False,
+                           "scan_docker_images": False, "applications": []})
+            with mock.patch.object(guard, "get_os", return_value={
+                "distribution": "Ubuntu", "kernel": "generic"
+            }), mock.patch.object(guard, "inventory", return_value={}), \
+                 mock.patch.object(guard, "ports_audit", return_value=([], [], None)), \
+                 mock.patch.object(guard, "docker_audit", return_value=([], [], [], None)), \
+                 mock.patch.object(guard, "trivy_scan", side_effect=[
+                     ([], "site scan timed out"), ([], None)]) as scanner, \
+                 mock.patch.object(guard, "audit_dependencies", return_value=([], [], [])), \
+                 mock.patch.object(guard.shutil, "which", return_value=None):
+                report = guard.make_report(config)
+            self.assertEqual(scanner.call_count, 2)
+            self.assertTrue(any("site scan timed out" in e for e in report["scan_errors"]))
+            self.assertTrue(any("application:" in c for c in report["scan_coverage"]))
+
+    def test_missing_manual_application_is_reported(self):
+        config = guard.load_config(None)
+        config.update({"auto_discover_websites": False, "scan_host_rootfs": False,
+                       "scan_docker_images": False,
+                       "applications": [{"name": "missing", "path": "/nonexistent-cve-guard-test-app"}]})
+        with mock.patch.object(guard, "get_os", return_value={
+            "distribution": "Ubuntu", "kernel": "generic"
+        }), mock.patch.object(guard, "inventory", return_value={}), \
+             mock.patch.object(guard, "ports_audit", return_value=([], [], None)), \
+             mock.patch.object(guard, "docker_audit", return_value=([], [], [], None)), \
+             mock.patch.object(guard.shutil, "which", return_value=None):
+            report = guard.make_report(config)
+        self.assertTrue(any("Application path missing" in e for e in report["scan_errors"]))
+
     def test_trivy_conversion(self):
         payload = {"Results": [
             {"Target": "image", "Vulnerabilities": [
