@@ -130,3 +130,21 @@ bash -n scripts/*.sh scripts/cve
 项目仅使用 Python 标准库组织扫描，依赖 Trivy、npm、Composer 的实际安全数据库作已知漏洞判断；可用扫描器缺失时会记录未覆盖范围。
 
 本项目用于检测和维护**你有权管理的服务器**，没有远程漏洞利用、口令破解或攻击模块。
+
+
+## 扫描状态与计数说明（2026-10 更新）
+
+- 定时巡检成功写入报告后，即使 Composer 等个别检查未完成，systemd oneshot 也正常结束；未完成项目仍列在 `sudo cve report` 的「未完成或错误」部分。严重的程序异常或写报告失败仍返回非零退出码。
+- 报告分别显示「软件包漏洞匹配数」与「去重漏洞编号数」。同一漏洞可关联多个包和镜像，两者均不能直接代表可利用漏洞数量。
+- Linux 旧内核及 headers 的扫描匹配不等于运行中的内核受影响；需要结合 `uname -r`、Ubuntu 安全公告以及供应商补丁回移记录核实。
+- Composer 检查使用 `--no-plugins`，出现旧版 CLI 输出不合规时会标记扫描未完成，不把失败误报为零漏洞。建议安装与 PHP 版本兼容的 Composer 2。
+- 每日自动扫描仅生成本地报告，不会自动升级操作系统、PHP、Docker 镜像或应用依赖。任何修复必须由管理员单独确认执行。
+
+升级已有安装：
+
+```bash
+git pull --ff-only
+sudo bash scripts/install.sh
+sudo cve scan
+sudo cve report
+```
