@@ -11,6 +11,8 @@ import subprocess
 import sys
 import tempfile
 
+from risk import LABELS, classify
+
 REPORTS = Path("/var/lib/cve-guard/reports")
 PLANS = Path("/var/lib/cve-guard/plans")
 APT_NAME = re.compile(r"^[a-z0-9][a-z0-9+.-]*$")
@@ -68,6 +70,8 @@ def build_plan(report, source):
             "id": identity[2], "installed": identity[3],
             "fixed": str(issue.get("fixed", "")),
             "severity": str(issue.get("severity", "UNKNOWN")).upper(),
+            "risk_category": issue.get("risk_category") or classify(
+                issue, (report.get("host") or {}).get("kernel", "")),
             "action": "人工核实供应商安全公告和兼容性，再按官方步骤升级",
             "automated": False,
         })
@@ -78,11 +82,18 @@ def build_plan(report, source):
             "target": str(issue.get("evidence", "")), "package": "", "id": "",
             "installed": "", "fixed": "",
             "severity": str(issue.get("severity", "UNKNOWN")).upper(),
+            "risk_category": "configuration",
             "action": str(issue.get("remediation", "人工确认配置后修复")),
             "automated": False,
         })
-    items.sort(key=lambda i: (SEVERITIES.index(i["severity"]) if i["severity"] in SEVERITIES else 4,
-                              i["target"], i["package"], i["id"]))
+    category_priority = {
+        "configuration": 0, "installed_component": 1, "running_kernel": 2,
+        "kernel_version_unknown": 3, "kernel_build_package": 4, "inactive_kernel": 5,
+    }
+    items.sort(key=lambda i: (
+        category_priority.get(i["risk_category"], 6),
+        SEVERITIES.index(i["severity"]) if i["severity"] in SEVERITIES else 4,
+        i["target"], i["package"], i["id"]))
     return {
         "schema": 1,
         "created_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -96,26 +107,52 @@ def build_plan(report, source):
 
 
 def render(plan):
+    """Show an actionable, bounded summary. Full findings remain in private JSON."""
+    items = plan["items"]
     lines = ["# CVE Guard 修复建议", "",
              "生成时间：" + plan["created_utc"],
              "扫描报告：" + plan["source_report"], "",
-             "> 仅供审阅，不会自动升级。"]
+             "> 仅供审阅，不会自动升级，也不执行生产环境修改。"]
     if plan["scan_incomplete"]:
-        lines += ["", "警告：扫描未全部完成，不能把结果当作完整安全结论。"]
-    lines += ["", "## 风险项（%d）" % len(plan["items"]), ""]
-    for item in plan["items"]:
-        lines.append("- **%s** %s | %s | %s | 已安装：%s | 修复版本：%s | 建议：%s" % (
-            item["severity"], item["id"], item["package"], item["target"],
-            item["installed"], item["fixed"], item["action"]))
-    if not plan["items"]:
-        lines.append("- 没有发现已报告的风险项，不代表不存在漏洞。")
-    lines += ["", "## 处理方式", "",
-              "1. 每日自动扫描并生成修复建议。",
-              "2. 人工核对漏洞、维护窗口、备份和兼容性。",
-              "3. Ubuntu APT 包：sudo cve prepare 查看模拟升级清单。",
-              "4. 人工核对后执行 sudo cve apply，并在终端输入确认词。",
-              "5. PHP、Composer、npm、Docker、数据库、宝塔软件仅给出建议，不自动修改。",
-              "", "APT 升级可能重启服务；必须提前备份并安排维护窗口。"]
+        lines += ["", "## 扫描未完成", ""]
+        lines += ["- " + str(error).replace("\n", " ") for error in
+                  plan.get("scan_errors", [])[:30]]
+        if len(plan.get("scan_errors", [])) > 30:
+            lines.append("- 其余错误请查看扫描 JSON。")
+
+    counts = {}
+    for item in items:
+        cat = item.get("risk_category", "installed_component")
+        counts[cat] = counts.get(cat, 0) + 1
+    lines += ["", "## 风险分类（软件包匹配记录，不代表实际可利用）", ""]
+    for category in ("configuration", "installed_component", "running_kernel",
+                     "kernel_version_unknown", "kernel_build_package",
+                     "inactive_kernel"):
+        label = "配置/维护风险" if category == "configuration" else LABELS[category]
+        lines.append("- %s：%d" % (label, counts.get(category, 0)))
+    lines += ["", "## 优先核实清单（最多 120 条）", ""]
+    for item in items[:120]:
+        label = ("配置/维护" if item.get("risk_category") == "configuration"
+                 else LABELS.get(item.get("risk_category"), "待核实"))
+        parts = ["**%s**" % item["severity"], "[" + label + "]",
+                 item["id"], item["package"], item["target"],
+                 "已安装：" + item["installed"], "修复：" + item["fixed"],
+                 "建议：" + item["action"]]
+        lines.append("- " + " | ".join(str(p).replace("\n", " ") for p in parts if p))
+    if not items:
+        lines.append("- 当前成功覆盖的检查无已报告风险，不代表系统安全。")
+    if len(items) > 120:
+        lines.append("- 另外 %d 条匹配保存在同目录完整 plan-*.json，不会静默丢弃。" %
+                     (len(items) - 120))
+    lines += ["", "## 审批边界", "",
+              "1. 日常扫描与生成修复计划不会改动服务器。",
+              "2. 先核查发行版安全公告、网络暴露、备份、停机窗口和兼容性。",
+              "3. APT：sudo cve prepare 仅模拟和列出候选包。",
+              "4. sudo cve apply 只在交互式终端输入确认词后执行。",
+              "5. PHP、Composer、npm、Docker、数据库、宝塔软件仅建议，不自动修改。",
+              "", "历史内核匹配和头文件不等于当前运行内核存在可利用漏洞；",
+              "但历史内核仍然已安装，必要时需检查启动项及保留策略。",
+              "APT 更新可能重启服务，执行前请准备备份和维护窗口。"]
     return "\n".join(lines) + "\n"
 
 

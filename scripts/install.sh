@@ -11,7 +11,7 @@ source_dir="$(cd "$(dirname "$0")/.." && pwd)"
 for required in python3 systemctl install; do
   command -v "$required" >/dev/null || { echo "缺少依赖: $required" >&2; exit 2; }
 done
-for path in src/cve_guard.py src/site_discovery.py src/remediation.py scripts/cve config.example.json systemd/cve-guard.service systemd/cve-guard.timer; do
+for path in src/cve_guard.py src/site_discovery.py src/remediation.py src/risk.py scripts/cve config.example.json systemd/cve-guard.service systemd/cve-guard.timer; do
   [[ -f "$source_dir/$path" ]] || { echo "仓库文件不完整: $path" >&2; exit 2; }
 done
 
@@ -28,6 +28,7 @@ install -d -m 0700 /etc/cve-guard /var/lib/cve-guard /var/lib/cve-guard/cache /v
 install -m 0755 "$source_dir/src/cve_guard.py" /usr/local/lib/cve-guard/cve_guard.py
 install -m 0644 "$source_dir/src/site_discovery.py" /usr/local/lib/cve-guard/site_discovery.py
 install -m 0644 "$source_dir/src/remediation.py" /usr/local/lib/cve-guard/remediation.py
+install -m 0644 "$source_dir/src/risk.py" /usr/local/lib/cve-guard/risk.py
 install -m 0755 "$source_dir/scripts/cve" /usr/local/bin/cve
 
 # Protect any previous user configuration during upgrades.
