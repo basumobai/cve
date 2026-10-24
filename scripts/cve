@@ -41,6 +41,13 @@ try:
     print("UTC:", data.get("timestamp_utc", "?"))
     print("发现网站:", len(data.get("websites", [])))
     print("漏洞:", ", ".join(f"{k}={v}" for k, v in count.items()))
+    summary = data.get("risk_summary") or {}
+    groups = summary.get("package_matches") or {}
+    if groups:
+        print("风险分层：应用/其他=%s，当前内核=%s，内核开发包=%s，旧内核=%s，未知内核=%s" % (
+            groups.get("installed_component", 0), groups.get("running_kernel", 0),
+            groups.get("kernel_build_package", 0), groups.get("inactive_kernel", 0),
+            groups.get("kernel_version_unknown", 0)))
     print("配置发现:", len(data.get("findings", [])), "未完成:", len(data.get("scan_errors", [])))
 except (OSError, ValueError) as exc:
     print("报告读取失败:", exc, file=sys.stderr)
