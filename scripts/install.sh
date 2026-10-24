@@ -6,7 +6,7 @@ if ! command -v systemctl >/dev/null || ! command -v python3 >/dev/null; then
 fi
 SOURCE="$(cd "$(dirname "$0")/.." && pwd)"
 install -d -m 0755 /usr/local/lib/cve-guard
-install -d -m 0700 /etc/cve-guard /var/lib/cve-guard/reports
+install -d -m 0700 /etc/cve-guard /var/lib/cve-guard/reports /var/lib/cve-guard/cache
 install -m 0755 "$SOURCE/src/cve_guard.py" /usr/local/lib/cve-guard/cve_guard.py
 if [[ ! -f /etc/cve-guard/config.json ]]; then
   install -m 0600 "$SOURCE/config.example.json" /etc/cve-guard/config.json
@@ -22,6 +22,8 @@ Type=oneshot
 User=root
 UMask=0077
 Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=HOME=/var/lib/cve-guard
+Environment=TRIVY_CACHE_DIR=/var/lib/cve-guard/cache
 ExecStart=/usr/bin/python3 /usr/local/lib/cve-guard/cve_guard.py --config /etc/cve-guard/config.json --output-dir /var/lib/cve-guard/reports
 TimeoutStartSec=3h
 NoNewPrivileges=true
