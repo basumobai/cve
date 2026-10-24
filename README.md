@@ -7,8 +7,9 @@
 ## 功能与结果
 
 - 系统/软件盘点、监听地址与敏感端口提示、Docker 特权容器与 Docker Socket 挂载检查。
-- 调用已安装的 **Trivy** 检查容器镜像、指定的应用目录；可选检查宿主机 rootfs。Trivy 每次运行会刷新漏洞数据库（取决于其缓存设置和网络）。
-- 对配置的 Next.js / Laravel 项目分别运行 npm audit / composer audit（有对应锁文件、工具可用时）。
+- 默认**自动扫描宝塔 / aaPanel 网站根目录 `/www/wwwroot/`**：枚举每个网站目录（包括静态网站），深入查找 Laravel、Composer、Node.js、Next.js 相关锁文件；无需一站一站添加路径。
+- 调用已安装的 **Trivy** 检查网站目录、容器镜像和宿主机 rootfs（网站目录在 rootfs 扫描中跳过以减少重复）。Trivy 每次运行会按缓存策略刷新漏洞数据库。
+- 对自动发现或手动配置的项目分别运行 npm audit / composer audit（有对应锁文件、工具可用时）。仅有 yarn/pnpm/bun 锁文件的项目通过 Trivy 文件扫描尝试识别依赖漏洞，不强行使用 npm audit。
 - 自动生成本地 JSON 和 Markdown 报告，区分“发现风险”“扫描失败”“无法检查”，绝不将扫描失败当作零漏洞。
 - systemd 每天自动扫描；可**显式选择**启用 Ubuntu unattended-upgrades 的安全更新策略。数据库、PHP 大版本、容器镜像和应用更新一律不自动变更。
 - 无需 VPS 密码、SSH 私钥、Cloudflare Token 或 GitHub Token。
@@ -42,7 +43,9 @@ sudo journalctl -u cve-guard.service --no-pager -n 100
 sudo ls -l /var/lib/cve-guard/reports
 ```
 
-其中 applications 为需扫描的项目目录。比如 Learning 项目所在宿主目录或 Laravel 代码目录。**Docker 容器内的应用不会自动被扫描成宿主项目**；Trivy 的镜像扫描负责容器镜像内依赖。
+默认自动检测 `/www/wwwroot` 下的网站目录（包括 `/www/wwwroot/example.com` 这样的域名目录），并扫描整个站点目录及最多 3 层的嵌套项目清单，常见 PHP/Laravel/Next.js/Node.js 项目无需逐个配置。`applications` 仅用于添加不在网站目录下的其他项目，比如 Learning 项目所在的独立目录。**Docker 容器内的应用不会自动被扫描成宿主项目**；Trivy 的镜像扫描负责容器镜像内依赖。
+ 
+扫描器只读取本机内容，发现的路径与漏洞不会上传到 GitHub。默认不跟随网站目录里的符号链接（防止跑到站外的敏感目录）；被跳过的链接会报告为未覆盖。如网站是 `/www/wwwroot/site/current -> /srv/releases/...`，请单独将真实项目路径添加到 `applications`。
 
 检查定时任务：
 
@@ -61,7 +64,24 @@ sudo bash scripts/enable-ubuntu-security-updates.sh
 
 ## 配置
 
-参见 config.example.json。默认对宿主机 rootfs 扫描，也扫描可访问的 Docker 镜像；大型服务器使用 Trivy 扫描整个 rootfs 可能耗费较长时间与磁盘空间，可将 scan_host_rootfs 设为 false。镜像扫描需要 Docker 权限与 Trivy。
+参见 config.example.json。默认对宿主机 rootfs、网站目录、可访问 Docker 镜像进行扫描，大型服务器可能耗费较长时间与磁盘空间。可将 `scan_host_rootfs`、`scan_web_files` 或 `scan_docker_images` 改为 `false`。
+
+网站相关的默认配置为：
+
+```json
+{
+  "auto_discover_websites": true,
+  "web_roots": ["/www/wwwroot"],
+  "max_websites": 100,
+  "web_project_depth": 3,
+  "max_web_projects": 250,
+  "scan_web_files": true
+}
+```
+
+如果你已有旧版 `/etc/cve-guard/config.json`，**无需重置配置**：以上默认值在新扫描器中自动生效。希望扫描自定义网站目录，可修改 `web_roots`（例如另加 `/srv/www`）；可对单独部署的项目追加到 `applications`。
+
+为了控制误扫和开销，自动搜索跳过 `node_modules`、`vendor`、`storage`、`uploads`、`logs`、`cache`、`backups`、`.git` 等目录，既不执行网站 PHP/JavaScript 代码，也不读取数据库密码进行网络连接。**这不是 WebShell/恶意文件查杀器**；无锁文件或缺少扫描工具不意味着代码没有漏洞。
 
 ## 安全注意
 
@@ -86,7 +106,7 @@ python3 -m unittest discover -s tests -v
 
 ## 手动更新本项目扫描器
 
-在克隆目录执行 git pull --ff-only，然后 sudo bash scripts/install.sh 以更新部署的代码。GitHub 不会擅自向你的 VPS 推送未知代码；每天的 Trivy CVE 数据库按工具自身更新策略自动刷新。
+在克隆目录执行 `git pull --ff-only`，然后 `sudo bash scripts/install.sh` 以更新部署的代码。新增的网站发现功能需要同时安装 `site_discovery.py`，因此只 `git pull` 而不重新运行安装脚本不会更新已经部署的服务。GitHub 不会擅自向你的 VPS 推送未知代码；每天的 Trivy CVE 数据库按工具自身更新策略自动刷新。
 
 ## 当前边界
 
