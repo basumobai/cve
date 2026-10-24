@@ -41,8 +41,12 @@ def run(argv, timeout=25, cwd=None, output_limit=150000):
     try:
         proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True,
                               errors="replace", timeout=timeout, check=False)
+        stderr = proc.stderr
+        # PHP deprecation floods can hide the actual fatal message at the end.
+        if len(stderr) > 1500:
+            stderr = stderr[:300] + "\\n...[stderr truncated]...\\n" + stderr[-1200:]
         return {"ok": proc.returncode == 0, "returncode": proc.returncode,
-                "stdout": proc.stdout[:output_limit], "error": proc.stderr[:1200],
+                "stdout": proc.stdout[:output_limit], "error": stderr,
                 "truncated": len(proc.stdout) > output_limit}
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"ok": False, "returncode": None, "stdout": "",
@@ -298,35 +302,43 @@ def audit_dependencies(app, timeout):
     elif (path / "package-lock.json").exists():
         errors.append(f"{name}: npm CLI not installed")
     if (path / "composer.lock").is_file() and shutil.which("composer"):
-        result = run(["composer", "--no-plugins", "audit", "--locked", "--format=json", "--no-interaction"],
-                     cwd=str(path), timeout=timeout, output_limit=2000000)
-        try:
-            if result.get("truncated"):
-                raise ValueError("composer audit JSON output exceeded limit")
-            output = result["stdout"].strip()
-            # Old Composer versions may print notices before JSON. Never
-            # interpret missing or malformed JSON as a clean audit.
-            if 'Command "audit" is not defined' in result["error"] or \
-                    'Command "audit" is not defined' in output:
-                raise ValueError("当前 Composer 不支持 audit 命令；需 Composer >= 2.4。仅升级 Composer CLI，不要执行 composer update")
-            if not output.startswith("{"):
-                raise ValueError("Composer 未输出有效 JSON；检查 Composer 版本、插件与仓库网络")
-            data = json.loads(output)
-            if not isinstance(data, dict) or data.get("error") or data.get("errors"):
-                raise ValueError("composer audit returned errors")
-            if result["returncode"] not in (0, 1):
-                raise ValueError("composer audit exit code: " + str(result["returncode"]))
-            advisories = data.get("advisories") or {}
-            if not isinstance(advisories, dict):
-                raise ValueError("composer audit unexpected advisories format")
-            for package, entries in advisories.items():
-                for v in entries:
-                    vulns.append({"id": v.get("cve") or v.get("advisoryId") or "unknown",
-                                  "severity": str(v.get("severity") or "UNKNOWN").upper(),
-                                  "package": package, "installed": "", "fixed": "",
-                                  "target": name})
-        except (ValueError, TypeError) as exc:
-            errors.append(f"{name}: composer audit incomplete: {exc}; {result['error']}")
+        version = run(["composer", "--version", "--no-interaction"], timeout=15)
+        version_text = version["stdout"] + "\\n" + version["error"]
+        match = re.search(r"Composer(?:\\s+version)?\\s+(\\d+)\\.(\\d+)",
+                          version_text, re.IGNORECASE)
+        if match and (int(match.group(1)), int(match.group(2))) < (2, 4):
+            errors.append(f"{name}: composer audit incomplete: Composer \\
+{match.group(1)}.{match.group(2)} does not support audit; upgrade Composer CLI to >=2.4 only")
+        else:
+            result = run(["composer", "--no-plugins", "audit", "--locked", "--format=json", "--no-interaction"],
+                         cwd=str(path), timeout=timeout, output_limit=2000000)
+            try:
+                if result.get("truncated"):
+                    raise ValueError("composer audit JSON output exceeded limit")
+                output = result["stdout"].strip()
+                # Old Composer versions may print notices before JSON. Never
+                # interpret missing or malformed JSON as a clean audit.
+                if 'Command "audit" is not defined' in result["error"] or \
+                        'Command "audit" is not defined' in output:
+                    raise ValueError("当前 Composer 不支持 audit 命令；需 Composer >= 2.4。仅升级 Composer CLI，不要执行 composer update")
+                if not output.startswith("{"):
+                    raise ValueError("Composer 未输出有效 JSON；检查 Composer 版本、插件与仓库网络")
+                data = json.loads(output)
+                if not isinstance(data, dict) or data.get("error") or data.get("errors"):
+                    raise ValueError("composer audit returned errors")
+                if result["returncode"] not in (0, 1):
+                    raise ValueError("composer audit exit code: " + str(result["returncode"]))
+                advisories = data.get("advisories") or {}
+                if not isinstance(advisories, dict):
+                    raise ValueError("composer audit unexpected advisories format")
+                for package, entries in advisories.items():
+                    for v in entries:
+                        vulns.append({"id": v.get("cve") or v.get("advisoryId") or "unknown",
+                                      "severity": str(v.get("severity") or "UNKNOWN").upper(),
+                                      "package": package, "installed": "", "fixed": "",
+                                      "target": name})
+            except (ValueError, TypeError) as exc:
+                errors.append(f"{name}: composer audit incomplete: {exc}; {result['error']}")
     elif (path / "composer.lock").exists():
         errors.append(f"{name}: Composer not installed")
     return findings, vulns, errors
