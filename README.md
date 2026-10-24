@@ -23,7 +23,13 @@ cd /opt/cve-guard
 sudo bash scripts/install.sh
 ```
 
-安装脚本检查 Python3，安装 systemd 单元和配置模板，**不自动下载或安装 Trivy**。参考 [Trivy 官方安装说明](https://trivy.dev/latest/getting-started/installation/) 安装 Trivy，才能进行实际 CVE 识别。没有 Trivy 时报告会标记扫描未完成。
+安装脚本检查 Python3，安装 systemd 单元和配置模板，**不自动下载或安装 Trivy**。建议单独执行以下可审计的可选安装脚本，从 Trivy 官方签名 APT 仓库安装漏洞扫描器：
+
+```bash
+sudo bash scripts/install-trivy.sh
+```
+
+也可参考 [Trivy 官方安装说明](https://trivy.dev/latest/getting-started/installation/) 手动安装。没有 Trivy 时报告会标记扫描未完成。
 
 配置（本地文件不要提交到 GitHub）：
 
@@ -69,7 +75,7 @@ sudo bash scripts/enable-ubuntu-security-updates.sh
 
 ## GitHub CI
 
-.github/workflows/ci.yml 会在推送、PR 和每周定时执行单元测试。**CI 的宿主机是 GitHub Runner，不是你的 VPS。**
+.github/workflows/ci.yml 会在推送、PR 和每周定时执行单元测试；Dependabot 每周提出 GitHub Actions 依赖更新 PR。**CI 的宿主机是 GitHub Runner，不是你的 VPS。**
 
 ## 手动运行
 
