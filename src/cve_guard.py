@@ -291,12 +291,17 @@ def audit_dependencies(app, timeout):
     elif (path / "package-lock.json").exists():
         errors.append(f"{name}: npm CLI not installed")
     if (path / "composer.lock").is_file() and shutil.which("composer"):
-        result = run(["composer", "audit", "--locked", "--format=json", "--no-interaction"],
+        result = run(["composer", "--no-plugins", "audit", "--locked", "--format=json", "--no-interaction"],
                      cwd=str(path), timeout=timeout, output_limit=2000000)
         try:
             if result.get("truncated"):
                 raise ValueError("composer audit JSON output exceeded limit")
-            data = json.loads(result["stdout"])
+            output = result["stdout"].strip()
+            # Old Composer versions may print notices before JSON. Never
+            # interpret missing or malformed JSON as a clean audit.
+            if not output.startswith("{"):
+                raise ValueError("Composer did not return JSON (upgrade Composer 2)")
+            data = json.loads(output)
             if not isinstance(data, dict) or data.get("error") or data.get("errors"):
                 raise ValueError("composer audit returned errors")
             if result["returncode"] not in (0, 1):
@@ -327,6 +332,24 @@ def distinct_vulnerabilities(rows):
             seen.add(key)
             output.append(row)
     return output
+
+
+def unique_cve_counts(report):
+    """Count unique advisory IDs, separately from package match records."""
+    grouped = {}
+    rank = {name: i for i, name in enumerate(SEVERITIES)}
+    for row in report.get("vulnerabilities", []):
+        identifier = str(row.get("id") or "").strip()
+        if not identifier:
+            continue
+        severity = str(row.get("severity", "UNKNOWN")).upper()
+        severity = severity if severity in rank else "UNKNOWN"
+        if identifier not in grouped or rank[severity] < rank[grouped[identifier]]:
+            grouped[identifier] = severity
+    counts = {name: 0 for name in SEVERITIES}
+    for severity in grouped.values():
+        counts[severity] += 1
+    return counts
 
 
 def distinct_messages(messages):
@@ -478,7 +501,9 @@ def markdown_report(report):
         f"- 时间 (UTC): {report['timestamp_utc']}",
         f"- 系统: {report['host']['distribution']}",
         f"- 内核: {report['host']['kernel']}",
-        f"- 漏洞数: " + ", ".join(f"{s}={n}" for s, n in counts.items()),
+        f"- 软件包漏洞匹配数（非独立漏洞）: " + ", ".join(f"{s}={n}" for s, n in counts.items()),
+        "- 去重漏洞编号数: " + ", ".join(f"{s}={n}" for s, n in unique_cve_counts(report).items()),
+        "- 注意：同一 CVE 可影响多个包；漏洞匹配不等于实际可利用。",
         f"- 配置/维护发现: {len(report['findings'])}",
         f"- 未完成检查: {len(report['scan_errors'])}",
         "", "## 扫描覆盖", "",
@@ -498,6 +523,7 @@ def markdown_report(report):
     if not report["findings"]:
         lines.append("- 在已覆盖的检查中未发现配置风险；不等于系统安全。")
     lines += ["", "## 漏洞（最多展示前 150 条，完整数据见 JSON）", ""]
+    lines += ["- 主机内核包匹配包含非运行中的旧内核/headers；请结合运行内核和发行版安全公告复核。"]
     priority = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "UNKNOWN": 4}
     for v in sorted(report["vulnerabilities"],
                     key=lambda v: priority.get(v.get("severity"), 5))[:150]:
@@ -551,7 +577,7 @@ def main():
     print(json.dumps({"reports": paths, "vulnerabilities": len(report["vulnerabilities"]),
                       "findings": len(report["findings"]),
                       "scan_errors": len(report["scan_errors"])}, ensure_ascii=False))
-    return 0 if not report["scan_errors"] else 1
+    # Incomplete probes remain visible in the report; a successful report\n    # generation is not a crashed systemd oneshot task.\n    return 0
 
 
 if __name__ == "__main__":
