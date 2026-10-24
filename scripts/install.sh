@@ -8,6 +8,7 @@ SOURCE="$(cd "$(dirname "$0")/.." && pwd)"
 install -d -m 0755 /usr/local/lib/cve-guard
 install -d -m 0700 /etc/cve-guard /var/lib/cve-guard/reports /var/lib/cve-guard/cache
 install -m 0755 "$SOURCE/src/cve_guard.py" /usr/local/lib/cve-guard/cve_guard.py
+install -m 0644 "$SOURCE/src/site_discovery.py" /usr/local/lib/cve-guard/site_discovery.py
 if [[ ! -f /etc/cve-guard/config.json ]]; then
   install -m 0600 "$SOURCE/config.example.json" /etc/cve-guard/config.json
 fi
