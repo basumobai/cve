@@ -34,16 +34,17 @@ SENSITIVE_PORTS = {
 SEVERITIES = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN")
 
 
-def run(argv, timeout=25, cwd=None):
+def run(argv, timeout=25, cwd=None, output_limit=150000):
     """Run a fixed argv list; no shell, bounded output, timeouts and failures recorded."""
     try:
         proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True,
                               errors="replace", timeout=timeout, check=False)
         return {"ok": proc.returncode == 0, "returncode": proc.returncode,
-                "stdout": proc.stdout[:150000], "error": proc.stderr[:1200]}
+                "stdout": proc.stdout[:output_limit], "error": proc.stderr[:1200],
+                "truncated": len(proc.stdout) > output_limit}
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"ok": False, "returncode": None, "stdout": "",
-                "error": f"{type(exc).__name__}: {exc}"}
+                "error": f"{type(exc).__name__}: {exc}", "truncated": False}
 
 
 def finding(kind, severity, title, evidence, remediation):
@@ -260,10 +261,22 @@ def audit_dependencies(app, timeout):
     if not path.is_dir():
         return [], [], [f"{name}: directory not found: {path}"]
     if (path / "package-lock.json").is_file() and shutil.which("npm"):
-        result = run(["npm", "audit", "--json", "--omit=dev"], cwd=str(path), timeout=timeout)
+        result = run(["npm", "audit", "--json", "--omit=dev"], cwd=str(path),
+                     timeout=timeout, output_limit=2000000)
         try:
+            if result.get("truncated"):
+                raise ValueError("npm audit JSON output exceeded limit")
             data = json.loads(result["stdout"])
-            for advisory_id, advisory in (data.get("vulnerabilities") or {}).items():
+            if not isinstance(data, dict) or data.get("error"):
+                raise ValueError("npm audit reported an API or registry error")
+            if result["returncode"] not in (0, 1):
+                raise ValueError("npm audit exit code: " + str(result["returncode"]))
+            advisories = data.get("vulnerabilities") or {}
+            if not isinstance(advisories, dict):
+                raise ValueError("npm audit unexpected vulnerabilities format")
+            for advisory_id, advisory in advisories.items():
+                if not isinstance(advisory, dict):
+                    continue
                 severity = str(advisory.get("severity", "UNKNOWN")).upper()
                 via = advisory.get("via") or []
                 cves = sorted({c for v in via if isinstance(v, dict)
@@ -273,26 +286,59 @@ def audit_dependencies(app, timeout):
                               "fixed": "", "target": name,
                               "advisory": advisory.get("fixAvailable", False),
                               "cwe": cves})
-        except (ValueError, TypeError):
-            errors.append(f"{name}: npm audit returned non-JSON or failed: {result['error']}")
+        except (ValueError, TypeError) as exc:
+            errors.append(f"{name}: npm audit incomplete: {exc}; {result['error']}")
     elif (path / "package-lock.json").exists():
         errors.append(f"{name}: npm CLI not installed")
     if (path / "composer.lock").is_file() and shutil.which("composer"):
         result = run(["composer", "audit", "--locked", "--format=json", "--no-interaction"],
-                     cwd=str(path), timeout=timeout)
+                     cwd=str(path), timeout=timeout, output_limit=2000000)
         try:
+            if result.get("truncated"):
+                raise ValueError("composer audit JSON output exceeded limit")
             data = json.loads(result["stdout"])
-            for package, entries in (data.get("advisories") or {}).items():
+            if not isinstance(data, dict) or data.get("error") or data.get("errors"):
+                raise ValueError("composer audit returned errors")
+            if result["returncode"] not in (0, 1):
+                raise ValueError("composer audit exit code: " + str(result["returncode"]))
+            advisories = data.get("advisories") or {}
+            if not isinstance(advisories, dict):
+                raise ValueError("composer audit unexpected advisories format")
+            for package, entries in advisories.items():
                 for v in entries:
                     vulns.append({"id": v.get("cve") or v.get("advisoryId") or "unknown",
                                   "severity": str(v.get("severity") or "UNKNOWN").upper(),
                                   "package": package, "installed": "", "fixed": "",
                                   "target": name})
-        except (ValueError, TypeError):
-            errors.append(f"{name}: composer audit failed: {result['error']}")
+        except (ValueError, TypeError) as exc:
+            errors.append(f"{name}: composer audit incomplete: {exc}; {result['error']}")
     elif (path / "composer.lock").exists():
         errors.append(f"{name}: Composer not installed")
     return findings, vulns, errors
+
+
+def distinct_vulnerabilities(rows):
+    """Keep one finding for each unique package/advisory/version/target."""
+    output, seen = [], set()
+    for row in rows:
+        key = tuple(str(row.get(field, "")) for field in
+                    ("id", "package", "installed", "target"))
+        if key not in seen:
+            seen.add(key)
+            output.append(row)
+    return output
+
+
+def distinct_messages(messages):
+    return list(dict.fromkeys(messages))
+
+
+def counts_by_severity(report):
+    result = {name: 0 for name in SEVERITIES}
+    for vuln in report.get("vulnerabilities", []):
+        severity = str(vuln.get("severity", "UNKNOWN")).upper()
+        result[severity if severity in result else "UNKNOWN"] += 1
+    return result
 
 
 def make_report(config):
@@ -337,8 +383,10 @@ def make_report(config):
                 report["scan_coverage"].append("image: " + image)
                 report["vulnerabilities"].extend(vulns)
     if config.get("scan_host_rootfs", False):
-        # Website dependency scans are separate to avoid repeated expensive traversal.
-        skip = config.get("web_roots", []) if config.get("auto_discover_websites", True) else []
+        # Skip website roots only if individual website filesystem scanning is enabled.
+        skip = (config.get("web_roots", [])
+                if config.get("auto_discover_websites", True) and
+                   config.get("scan_web_files", True) else [])
         vulns, err = trivy_scan("rootfs", "/", timeout, skip_dirs=skip)
         if err:
             report["scan_errors"].append("Host rootfs: " + err)
@@ -411,14 +459,13 @@ def make_report(config):
                     "Review apt policies and apply Ubuntu security updates."))
         else:
             report["scan_errors"].append("apt list: " + result["error"])
+    report["vulnerabilities"] = distinct_vulnerabilities(report["vulnerabilities"])
+    report["scan_errors"] = distinct_messages(report["scan_errors"])
     return report
 
 
 def markdown_report(report):
-    counts = {s: 0 for s in SEVERITIES}
-    for v in report["vulnerabilities"]:
-        sev = v.get("severity", "UNKNOWN")
-        counts[sev if sev in counts else "UNKNOWN"] += 1
+    counts = counts_by_severity(report)
     lines = [
         "# CVE Guard — 本地巡检结果", "",
         f"- 时间 (UTC): {report['timestamp_utc']}",
@@ -458,7 +505,7 @@ def markdown_report(report):
     return "\n".join(lines)
 
 
-def save_reports(report, outdir):
+def save_reports(report, outdir, keep=30):
     outdir = Path(outdir)
     outdir.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(outdir, 0o700)
@@ -473,6 +520,12 @@ def save_reports(report, outdir):
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(contents)
         paths.append(str(path))
+    # Rotate only files generated by this tool; keep last N reports.
+    archives = sorted(p for p in outdir.glob("scan-*.json") if p.is_file() and not p.is_symlink())
+    for old in archives[:-keep]:
+        for report_path in (old, old.with_suffix(".md")):
+            if report_path.is_file() and not report_path.is_symlink():
+                report_path.unlink()
     return paths
 
 
