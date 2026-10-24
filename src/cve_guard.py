@@ -271,6 +271,16 @@ def make_report(config):
     report = {"timestamp_utc": now, "host": get_os(), "versions": inventory(),
               "listeners": [], "containers": [], "vulnerabilities": [],
               "findings": [], "scan_errors": [], "scan_coverage": []}
+    # Vendor backports may exist; report unsupported upstream runtimes for manual verification.
+    for label, value in report["versions"].items():
+        if not label.startswith("php:"):
+            continue
+        match = re.search(r"PHP\s+(\d+)\.(\d+)\.", str(value))
+        if match and (int(match.group(1)) < 8 or
+                      (int(match.group(1)) == 8 and int(match.group(2)) < 2)):
+            report["findings"].append(finding("maintenance", "HIGH",
+                "PHP upstream branch out of support", f"{label}: {value}",
+                "Check vendor backported security fixes; migrate to a supported PHP branch after compatibility testing."))
     listeners, findings, err = ports_audit()
     report["listeners"] = listeners
     report["findings"].extend(findings)
@@ -373,7 +383,7 @@ def save_reports(report, outdir):
     outdir = Path(outdir)
     outdir.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(outdir, 0o700)
-    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     paths = []
     for suffix, contents in [
         (".json", json.dumps(report, ensure_ascii=False, indent=2) + "\n"),
