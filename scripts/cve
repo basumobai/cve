@@ -11,6 +11,9 @@ CVE Guard · Ubuntu 安全巡检
   sudo cve scan             立即扫描本机、网站和容器
   sudo cve status           查看自动巡检状态和最近结果
   sudo cve report           查看最近一次完整报告
+  sudo cve plan             查看最新修复建议（自动生成）
+  sudo cve prepare          模拟 APT 升级并准备候选清单（不修改系统）
+  sudo cve apply            交互确认后升级 APT 包
   sudo cve update           快进更新本项目程序（不更新网站）
   sudo cve enable-updates   可选启用 Ubuntu 安全补丁安装
   cve help                  帮助
@@ -64,6 +67,23 @@ case "$@" in
   report)
     root
     if report="$(latest md)"; then cat -- "$report"; else echo '尚无报告，先运行 sudo cve scan' >&2; exit 1; fi
+    ;;
+  plan)
+    root
+    if report="$(find /var/lib/cve-guard/plans -maxdepth 1 -type f -name 'plan-*.md' -printf '%f\n' 2>/dev/null | LC_ALL=C sort | tail -n 1)"; then
+      [[ -n "$report" ]] || { echo '没有修复方案，先执行 sudo cve scan' >&2; exit 1; }
+      cat -- "/var/lib/cve-guard/plans/$report"
+    else
+      echo '没有修复方案，先执行 sudo cve scan' >&2; exit 1
+    fi
+    ;;
+  prepare)
+    root
+    /usr/bin/python3 /usr/local/lib/cve-guard/remediation.py prepare
+    ;;
+  apply)
+    root
+    /usr/bin/python3 /usr/local/lib/cve-guard/remediation.py apply
     ;;
   update)
     root
