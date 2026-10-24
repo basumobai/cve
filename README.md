@@ -31,7 +31,7 @@ cd /opt/cve-guard && git pull --ff-only && sudo bash scripts/install.sh
 
 使用非 root 账户克隆仓库的旧用户，请用原账户执行 `git pull`；`sudo cve update` 可能受到 Git 目录所有权安全检查限制。
 
-## 2. 日常使用（只记住 4 条）
+## 2. 日常使用
 
 | 命令 | 做什么 |
 |---|---|
@@ -128,7 +128,7 @@ sudo nano /etc/cve-guard/config.json
 - **每天**：systemd 自动执行本机巡检。Trivy 按缓存/网络状态更新自己的漏洞数据库。
 - **每周**：GitHub CI 测试代码，Dependabot 针对仓库工作流依赖提出 PR。
 - **手动**：`sudo cve update` 更新扫描器程序；不自动部署未经审核的远程代码。
-- **可选**：`sudo cve enable-updates` 启用 Ubuntu 的 unattended-upgrades，安装适用的系统包安全补丁。**此命令会修改 APT 更新设置**，执行前应备份、审查升级来源和维护策略。
+- **默认不启用无人值守系统更新**：此前如果曾运行旧版的 `sudo cve enable-updates`，系统可能仍启用 unattended-upgrades；需自行检查现有 APT 自动更新配置。
 - **只有人工审批后执行**：APT 升级（`cve prepare` + `cve apply`）；其他组件只给出修复建议。
 - **永不自动执行**：PHP 大版本升级、Composer 更新、`npm audit fix`、数据库迁移、Docker 镜像更新或容器重建。
 
