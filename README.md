@@ -3,7 +3,8 @@
 **Ubuntu VPS 安全巡检。自动发现宝塔 / aaPanel 的网站目录，检查服务器、依赖和 Docker 镜像的已知漏洞。**
 
 - 默认扫描：Ubuntu 24.04、`/www/wwwroot/*`、PHP / Composer、Node.js / Next.js、Docker、Redis / PostgreSQL 等常见服务
-- 每天自动巡检，漏洞库由 Trivy 按需更新
+- 每天自动巡检并自动生成修复建议，漏洞库由 Trivy 按需更新
+- **任何修复都必须经用户确认**：APT 提供交互式审批；网站依赖、PHP、Docker、数据库只生成建议
 - **只读检查**：不会自动改动网站代码、PHP、数据库或容器；扫描结果**只保留在服务器本地**
 - 适合个人 VPS 和小型自建站点；不会尝试利用漏洞或破解服务
 
@@ -30,13 +31,16 @@ cd /opt/cve-guard && git pull --ff-only && sudo bash scripts/install.sh
 
 使用非 root 账户克隆仓库的旧用户，请用原账户执行 `git pull`；`sudo cve update` 可能受到 Git 目录所有权安全检查限制。
 
-## 2. 日常使用（只记住 4 条）
+## 2. 日常使用
 
 | 命令 | 做什么 |
 |---|---|
 | `sudo cve scan` | 立即扫描并显示漏洞数量、扫描失败数量 |
 | `sudo cve status` | 查看每日巡检状态、最近一次扫描摘要 |
 | `sudo cve report` | 在终端查看最新详细报告 |
+| `sudo cve plan` | 查看每日自动生成的修复建议 |
+| `sudo cve prepare` | 模拟 Ubuntu APT 更新，生成待确认的候选包清单 |
+| `sudo cve apply` | 交互式审批后升级已审核的 APT 候选包 |
 | `sudo cve update` | 更新扫描器代码和服务配置，**不会升级你的站点** |
 
 报告存放在 `/var/lib/cve-guard/reports/`（JSON + Markdown）。报告目录仅 root 可读，默认保留最近 **30 次**。若扫描退出非零，通常是有检查没有完成；可以先运行：
@@ -51,7 +55,26 @@ sudo journalctl -u cve-guard.service -n 100 --no-pager
 sudo systemctl list-timers cve-guard.timer
 ```
 
-## 3. 默认会扫描哪些内容？
+## 3. 修复建议与人工审批
+
+每次扫描结束后，系统自动在 `/var/lib/cve-guard/plans/` 生成 Markdown 和 JSON 修复方案（仅 root 可读）。即使部分扫描失败，也会保留失败警告，**绝不把“0 个漏洞”当作安全证明**。
+
+```bash
+sudo cve scan      # 扫描并自动生成修复建议
+sudo cve plan      # 查看风险、目标组件、建议措施
+sudo cve prepare   # 只读模拟 apt upgrade，生成候选升级包
+sudo cve apply     # 人工核对清单并输入 APPLY APT UPDATES 才执行
+```
+
+重要边界：
+
+- `cve prepare` 会列出 **APT 可升级的全部候选包**，并非全部都是安全补丁；它不会自动执行。请检查升级是否涉及 OpenSSH、内核、Nginx、Docker 等关键服务，安排备份和维护窗口。
+- `cve apply` 必须在交互式终端运行，输入完整确认词才执行；拒绝 CI、cron 和无终端执行。计划有效期为 1 小时，若 APT 候选列表变化，必须重新准备。
+- **PHP / Composer / npm / Docker / PostgreSQL / Redis / 宝塔软件**：仅生成建议，不会运行 `npm audit fix`、`composer update`、容器重建、数据库迁移或其他生产修改。
+- 此审批只授权当前 APT 候选包升级，**不授权未来的任何自动更新**。APT 可能重启服务，也可能引入依赖包升级；升级后必须复检。
+- **重要：如果此前单独启用了 Ubuntu unattended-upgrades 或其他自动更新程序，它们不受 CVE Guard 审批限制，可能自行升级系统。** 需要完全手动审批时，请检查并单独关闭已有自动更新策略。
+
+## 4. 默认会扫描哪些内容？
 
 | 目标 | 检查方式 | 说明 |
 |---|---|---|
@@ -65,7 +88,7 @@ sudo systemctl list-timers cve-guard.timer
 
 项目检测深度默认为网站根目录以下 **3 层**，最多累计 250 个项目。为了控制性能和避免不必要地读取隐私文件，自动搜索跳过 `node_modules`、`vendor`、`uploads`、`storage`、`logs`、`backups`、`.git` 等；**不会沿目录符号链接扫描站外文件**。因此发现并不保证覆盖全部依赖；跳过的目录、扫描失败会在报告中标明。
 
-## 4. 可选配置
+## 5. 可选配置
 
 只有网站不在 `/www/wwwroot` 下、需要额外扫描某个项目，或需要节省磁盘/扫描时间时，才需要修改：
 
@@ -100,17 +123,18 @@ sudo nano /etc/cve-guard/config.json
 
 配置变更后运行 `sudo cve scan` 即可生效；不需要重装。
 
-## 5. 自动更新：有哪些、没有哪些？
+## 6. 自动更新：有哪些、没有哪些？
 
 - **每天**：systemd 自动执行本机巡检。Trivy 按缓存/网络状态更新自己的漏洞数据库。
 - **每周**：GitHub CI 测试代码，Dependabot 针对仓库工作流依赖提出 PR。
 - **手动**：`sudo cve update` 更新扫描器程序；不自动部署未经审核的远程代码。
-- **可选**：`sudo cve enable-updates` 启用 Ubuntu 的 unattended-upgrades，安装适用的系统包安全补丁。**此命令会修改 APT 更新设置**，执行前应备份、审查升级来源和维护策略。
+- **默认不启用无人值守系统更新**：此前如果曾运行旧版的 `sudo cve enable-updates`，系统可能仍启用 unattended-upgrades；需自行检查现有 APT 自动更新配置。
+- **只有人工审批后执行**：APT 升级（`cve prepare` + `cve apply`）；其他组件只给出修复建议。
 - **永不自动执行**：PHP 大版本升级、Composer 更新、`npm audit fix`、数据库迁移、Docker 镜像更新或容器重建。
 
 首次 Trivy 扫描可能下载体积较大的漏洞数据库。软件源不可达、空间不足、镜像拉取失败、文件权限不足时，报告应显示扫描未完成，而不是把漏洞数量 0 当作安全结论。
 
-## 6. 安全与局限
+## 7. 安全与局限
 
 1. **本工具不能证明“无漏洞”**，也不是 WebShell 检测或全面源代码审计。可用于快速找出已知依赖 CVE 和一部分常见错误配置。
 2. 端口监听所有地址 ≠ 已经公网可访问；还要综合云防火墙、UFW 和 Cloudflare 规则。
@@ -123,7 +147,7 @@ sudo nano /etc/cve-guard/config.json
 
 ```bash
 python3 -m unittest discover -s tests -v
-python3 -m py_compile src/cve_guard.py src/site_discovery.py
+python3 -m py_compile src/cve_guard.py src/site_discovery.py src/remediation.py
 bash -n scripts/*.sh scripts/cve
 ```
 
