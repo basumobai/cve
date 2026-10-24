@@ -16,8 +16,10 @@ jobs:
         with:
           python-version: '3.12'
       - name: Python compile check
-        run: python -m py_compile src/cve_guard.py
+        run: python -m py_compile src/cve_guard.py src/site_discovery.py
       - name: Unit tests
         run: python -m unittest discover -s tests -v
       - name: Bash syntax check
-        run: bash -n scripts/*.sh
+        run: bash -n scripts/*.sh scripts/cve
+      - name: CLI usage smoke test
+        run: bash scripts/cve help
