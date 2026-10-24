@@ -112,7 +112,7 @@ def render(plan):
     lines = ["# CVE Guard 修复建议", "",
              "生成时间：" + plan["created_utc"],
              "扫描报告：" + plan["source_report"], "",
-             "> 此报告只提供建议；不执行生产环境修改。"]
+             "> 仅供审阅，不会自动升级，也不执行生产环境修改。"]
     if plan["scan_incomplete"]:
         lines += ["", "## 扫描未完成", ""]
         lines += ["- " + str(error).replace("\n", " ") for error in
