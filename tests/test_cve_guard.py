@@ -223,6 +223,23 @@ class GuardTests(unittest.TestCase):
             self.assertFalse(vulns)
             self.assertTrue(any("Composer" in e for e in errors))
 
+    def test_composer_version_one_does_not_attempt_audit(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "composer.lock").write_text("{}", encoding="utf-8")
+            commands = []
+            def fake_run(args, **kwargs):
+                commands.append(args)
+                return {"stdout": "Composer version 1.10.27", "error": "",
+                        "returncode": 0, "ok": True, "truncated": False}
+            with mock.patch.object(guard.shutil, "which",
+                                   side_effect=lambda n: "/usr/bin/composer" if n == "composer" else None), \
+                 mock.patch.object(guard, "run", side_effect=fake_run):
+                _, vulns, errors = guard.audit_dependencies({"path": d}, 15)
+            self.assertEqual(len(commands), 1)
+            self.assertEqual(commands[0][:2], ["composer", "--version"])
+            self.assertEqual(vulns, [])
+            self.assertTrue(any(">=2.4" in e for e in errors))
+
     def test_retention_only_removes_generated_reports(self):
         with tempfile.TemporaryDirectory() as d:
             outdir = Path(d) / "reports"
