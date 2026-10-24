@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+SERVICE=cve-guard.service
+TIMER=cve-guard.timer
+REPO=/opt/cve-guard
+REPORTS=/var/lib/cve-guard/reports
+
+help() {
+  cat <<'HELP'
+CVE Guard · Ubuntu 安全巡检
+  sudo cve scan             立即扫描本机、网站和容器
+  sudo cve status           查看自动巡检状态和最近结果
+  sudo cve report           查看最近一次完整报告
+  sudo cve update           快进更新本项目程序（不更新网站）
+  sudo cve enable-updates   可选启用 Ubuntu 安全补丁安装
+  cve help                  帮助
+报告仅保存在本机 /var/lib/cve-guard/reports
+HELP
+}
+root() { if [[ "$EUID" -ne 0 ]]; then echo '请使用 sudo cve ...' >&2; exit 2; fi; }
+latest() {
+  local suffix="$1"
+  local file
+  # Only use report paths matching our generated names.
+  file="$(find "$REPORTS" -maxdepth 1 -type f -name "scan-*.$suffix" -printf '%f\n' 2>/dev/null | LC_ALL=C sort | tail -n 1)" || return 1
+  [[ -n "$file" ]] || return 1
+  printf '%s\n' "$REPORTS/$file"
+}
+brief() {
+  /usr/bin/python3 - "$1" <<'PY'
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        data = json.load(f)
+    count = {k: 0 for k in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN")}
+    for item in data.get("vulnerabilities", []):
+        severity = str(item.get("severity", "UNKNOWN")).upper()
+        count[severity if severity in count else "UNKNOWN"] += 1
+    print("UTC:", data.get("timestamp_utc", "?"))
+    print("发现网站:", len(data.get("websites", [])))
+    print("漏洞:", ", ".join(f"{k}={v}" for k, v in count.items()))
+    print("配置发现:", len(data.get("findings", [])), "未完成:", len(data.get("scan_errors", [])))
+except (OSError, ValueError) as exc:
+    print("报告读取失败:", exc, file=sys.stderr)
+    raise SystemExit(1)
+PY
+}
+case "$1" in
+  scan)
+    root
+    echo '正在扫描；首次更新漏洞数据库时可能较慢。'
+    rc=0
+    systemctl start "$SERVICE" || rc=$?
+    if report="$(latest json)"; then brief "$report"; echo "报告: $report"; else echo '尚未生成报告' >&2; rc=1; fi
+    echo '完整报告: sudo cve report'
+    exit "$rc"
+    ;;
+  status)
+    root
+    systemctl show "$TIMER" -p ActiveState -p NextElapseUSecRealtime --no-pager
+    systemctl show "$SERVICE" -p Result -p ExecMainStatus -p ActiveState --no-pager
+    if report="$(latest json)"; then brief "$report"; echo "报告: $report"; else echo '尚无报告'; fi
+    ;;
+  report)
+    root
+    if report="$(latest md)"; then cat -- "$report"; else echo '尚无报告，先运行 sudo cve scan' >&2; exit 1; fi
+    ;;
+  update)
+    root
+    [[ -d "$REPO/.git" ]] || { echo "找不到 $REPO 的 Git 仓库" >&2; exit 2; }
+    git -C "$REPO" pull --ff-only
+    bash "$REPO/scripts/install.sh" --no-trivy
+    echo '扫描器更新完成。如需立即检查，请运行 sudo cve scan'
+    ;;
+  enable-updates)
+    root
+    bash "$REPO/scripts/enable-ubuntu-security-updates.sh"
+    ;;
+  help|-h|--help|"") help ;;
+  *) help >&2; exit 2 ;;
+esac
